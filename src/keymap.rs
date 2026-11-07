@@ -5,14 +5,88 @@ use ratatui::crossterm::event::{
 use crate::command::Command;
 
 const TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
-    (KeyCode::Left, KeyModifiers::NONE, Command::MoveLeft),
-    (KeyCode::Right, KeyModifiers::NONE, Command::MoveRight),
-    (KeyCode::Up, KeyModifiers::NONE, Command::MoveUp),
-    (KeyCode::Down, KeyModifiers::NONE, Command::MoveDown),
-    (KeyCode::Home, KeyModifiers::NONE, Command::Home),
-    (KeyCode::End, KeyModifiers::NONE, Command::End),
-    (KeyCode::PageUp, KeyModifiers::NONE, Command::PageUp),
-    (KeyCode::PageDown, KeyModifiers::NONE, Command::PageDown),
+    (
+        KeyCode::Left,
+        KeyModifiers::NONE,
+        Command::MoveLeft { select: false },
+    ),
+    (
+        KeyCode::Left,
+        KeyModifiers::SHIFT,
+        Command::MoveLeft { select: true },
+    ),
+    (
+        KeyCode::Right,
+        KeyModifiers::NONE,
+        Command::MoveRight { select: false },
+    ),
+    (
+        KeyCode::Right,
+        KeyModifiers::SHIFT,
+        Command::MoveRight { select: true },
+    ),
+    (
+        KeyCode::Up,
+        KeyModifiers::NONE,
+        Command::MoveUp { select: false },
+    ),
+    (
+        KeyCode::Up,
+        KeyModifiers::SHIFT,
+        Command::MoveUp { select: true },
+    ),
+    (
+        KeyCode::Down,
+        KeyModifiers::NONE,
+        Command::MoveDown { select: false },
+    ),
+    (
+        KeyCode::Down,
+        KeyModifiers::SHIFT,
+        Command::MoveDown { select: true },
+    ),
+    (
+        KeyCode::Home,
+        KeyModifiers::NONE,
+        Command::Home { select: false },
+    ),
+    (
+        KeyCode::Home,
+        KeyModifiers::SHIFT,
+        Command::Home { select: true },
+    ),
+    (
+        KeyCode::End,
+        KeyModifiers::NONE,
+        Command::End { select: false },
+    ),
+    (
+        KeyCode::End,
+        KeyModifiers::SHIFT,
+        Command::End { select: true },
+    ),
+    (
+        KeyCode::PageUp,
+        KeyModifiers::NONE,
+        Command::PageUp { select: false },
+    ),
+    (
+        KeyCode::PageUp,
+        KeyModifiers::SHIFT,
+        Command::PageUp { select: true },
+    ),
+    (
+        KeyCode::PageDown,
+        KeyModifiers::NONE,
+        Command::PageDown { select: false },
+    ),
+    (
+        KeyCode::PageDown,
+        KeyModifiers::SHIFT,
+        Command::PageDown { select: true },
+    ),
+    (KeyCode::Up, KeyModifiers::ALT, Command::MoveLineUp),
+    (KeyCode::Down, KeyModifiers::ALT, Command::MoveLineDown),
     (KeyCode::Backspace, KeyModifiers::NONE, Command::Backspace),
     (KeyCode::Delete, KeyModifiers::NONE, Command::Delete),
     (KeyCode::Enter, KeyModifiers::NONE, Command::Insert('\n')),
@@ -20,6 +94,16 @@ const TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
     (KeyCode::Esc, KeyModifiers::NONE, Command::Cancel),
     (KeyCode::Char('s'), KeyModifiers::CONTROL, Command::Save),
     (KeyCode::Char('q'), KeyModifiers::CONTROL, Command::Quit),
+    (
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+        Command::SelectAll,
+    ),
+    (KeyCode::Char('x'), KeyModifiers::CONTROL, Command::Cut),
+    (KeyCode::Char('c'), KeyModifiers::CONTROL, Command::Copy),
+    (KeyCode::Char('v'), KeyModifiers::CONTROL, Command::Paste),
+    (KeyCode::Char('z'), KeyModifiers::CONTROL, Command::Undo),
+    (KeyCode::Char('y'), KeyModifiers::CONTROL, Command::Redo),
 ];
 
 pub fn resolve(key: &KeyEvent) -> Option<Command> {
@@ -47,6 +131,10 @@ pub fn resolve(key: &KeyEvent) -> Option<Command> {
 pub fn resolve_mouse(mouse: &MouseEvent) -> Option<Command> {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => Some(Command::Click {
+            column: mouse.column,
+            row: mouse.row,
+        }),
+        MouseEventKind::Drag(MouseButton::Left) => Some(Command::Drag {
             column: mouse.column,
             row: mouse.row,
         }),
@@ -83,35 +171,83 @@ mod tests {
     fn movement_keys_resolve() {
         assert_eq!(
             resolve(&key(KeyCode::Left, KeyModifiers::NONE)),
-            Some(Command::MoveLeft)
+            Some(Command::MoveLeft { select: false })
         );
         assert_eq!(
             resolve(&key(KeyCode::Right, KeyModifiers::NONE)),
-            Some(Command::MoveRight)
+            Some(Command::MoveRight { select: false })
         );
         assert_eq!(
             resolve(&key(KeyCode::Up, KeyModifiers::NONE)),
-            Some(Command::MoveUp)
+            Some(Command::MoveUp { select: false })
         );
         assert_eq!(
             resolve(&key(KeyCode::Down, KeyModifiers::NONE)),
-            Some(Command::MoveDown)
+            Some(Command::MoveDown { select: false })
         );
         assert_eq!(
             resolve(&key(KeyCode::Home, KeyModifiers::NONE)),
-            Some(Command::Home)
+            Some(Command::Home { select: false })
         );
         assert_eq!(
             resolve(&key(KeyCode::End, KeyModifiers::NONE)),
-            Some(Command::End)
+            Some(Command::End { select: false })
         );
         assert_eq!(
             resolve(&key(KeyCode::PageUp, KeyModifiers::NONE)),
-            Some(Command::PageUp)
+            Some(Command::PageUp { select: false })
         );
         assert_eq!(
             resolve(&key(KeyCode::PageDown, KeyModifiers::NONE)),
-            Some(Command::PageDown)
+            Some(Command::PageDown { select: false })
+        );
+    }
+
+    #[test]
+    fn shift_movement_selects() {
+        assert_eq!(
+            resolve(&key(KeyCode::Left, KeyModifiers::SHIFT)),
+            Some(Command::MoveLeft { select: true })
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Right, KeyModifiers::SHIFT)),
+            Some(Command::MoveRight { select: true })
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Up, KeyModifiers::SHIFT)),
+            Some(Command::MoveUp { select: true })
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Down, KeyModifiers::SHIFT)),
+            Some(Command::MoveDown { select: true })
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Home, KeyModifiers::SHIFT)),
+            Some(Command::Home { select: true })
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::End, KeyModifiers::SHIFT)),
+            Some(Command::End { select: true })
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::PageUp, KeyModifiers::SHIFT)),
+            Some(Command::PageUp { select: true })
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::PageDown, KeyModifiers::SHIFT)),
+            Some(Command::PageDown { select: true })
+        );
+    }
+
+    #[test]
+    fn alt_arrows_move_lines() {
+        assert_eq!(
+            resolve(&key(KeyCode::Up, KeyModifiers::ALT)),
+            Some(Command::MoveLineUp)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Down, KeyModifiers::ALT)),
+            Some(Command::MoveLineDown)
         );
     }
 
@@ -144,6 +280,30 @@ mod tests {
         assert_eq!(
             resolve(&key(KeyCode::Char('q'), KeyModifiers::CONTROL)),
             Some(Command::Quit)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            Some(Command::SelectAll)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            Some(Command::Cut)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(Command::Copy)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+            Some(Command::Paste)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            Some(Command::Undo)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+            Some(Command::Redo)
         );
     }
 
@@ -188,11 +348,6 @@ mod tests {
     }
 
     #[test]
-    fn shift_arrow_is_not_bound() {
-        assert_eq!(resolve(&key(KeyCode::Left, KeyModifiers::SHIFT)), None);
-    }
-
-    #[test]
     fn control_shift_letter_is_not_bound() {
         assert_eq!(
             resolve(&key(
@@ -233,6 +388,16 @@ mod tests {
         assert_eq!(
             resolve_mouse(&click),
             Some(Command::Click { column: 12, row: 4 })
+        );
+        let drag = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 7,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            resolve_mouse(&drag),
+            Some(Command::Drag { column: 7, row: 3 })
         );
         let wheel_up = MouseEvent {
             kind: MouseEventKind::ScrollUp,
