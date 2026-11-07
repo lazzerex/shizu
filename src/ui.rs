@@ -3,6 +3,7 @@ use ratatui::buffer::Buffer as TuiBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
+use crate::buffer::{Buffer, CharIdx};
 use crate::editor::Editor;
 use crate::view::{display_col, gutter_width, layout_line};
 
@@ -29,6 +30,7 @@ fn draw_text(
     let first = view.scroll_line();
     let scroll_col = view.scroll_col();
     let tab_width = view.tab_width();
+    let selection = editor.selection();
     let text_x = area.x.saturating_add(gutter);
     let text_right = text_x.saturating_add(text_width);
     let gutter_style = Style::default().add_modifier(Modifier::DIM);
@@ -37,6 +39,7 @@ fn draw_text(
         if line >= buffer.len_lines() {
             break;
         }
+        let selected = selection_columns(buffer, selection, line);
         let y = area.y.saturating_add(row);
         let number = format!(
             "{:>width$} ",
@@ -55,11 +58,41 @@ fn draw_text(
             if x >= text_right {
                 break;
             }
-            target.set_string(x, y, &cell.text, Style::default());
+            let style =
+                if selected.is_some_and(|(start, end)| cell.start >= start && cell.start < end) {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+            target.set_string(x, y, &cell.text, style);
             col += cell.width;
         }
     }
     draw_cursor(target, editor, area, gutter, text_width, text_height);
+}
+
+fn selection_columns(
+    buffer: &Buffer,
+    selection: Option<(CharIdx, CharIdx)>,
+    line: usize,
+) -> Option<(usize, usize)> {
+    let (from, to) = selection?;
+    let from_pos = buffer.line_col(from);
+    let to_pos = buffer.line_col(to);
+    if line < from_pos.line || line > to_pos.line {
+        return None;
+    }
+    let start = if line == from_pos.line {
+        from_pos.col
+    } else {
+        0
+    };
+    let end = if line == to_pos.line {
+        to_pos.col
+    } else {
+        buffer.line_end(line).get() - buffer.line_start(line).get()
+    };
+    (start < end).then_some((start, end))
 }
 
 fn draw_cursor(
@@ -208,7 +241,7 @@ mod tests {
         let mut editor = Editor::new(Buffer::from_text(&numbered_lines(10)));
         editor.resize(20, 4);
         for _ in 0..5 {
-            editor.apply(Command::MoveDown);
+            editor.apply(Command::MoveDown { select: false });
         }
         let terminal = render(&editor, 20, 4);
 
@@ -250,7 +283,7 @@ mod tests {
         let mut editor = Editor::new(Buffer::from_text("abcdefghij"));
         editor.resize(10, 3);
         for _ in 0..9 {
-            editor.apply(Command::MoveRight);
+            editor.apply(Command::MoveRight { select: false });
         }
         let terminal = render(&editor, 10, 3);
 
@@ -320,6 +353,42 @@ mod tests {
         let terminal = render(&editor, 20, 3);
 
         assert_eq!(row(&terminal, 0, 4), "1 hi");
+    }
+
+    fn reversed(terminal: &Terminal<TestBackend>, x: u16, y: u16) -> bool {
+        terminal
+            .backend()
+            .buffer()
+            .cell((x, y))
+            .map(ratatui::buffer::Cell::style)
+            .is_some_and(|style| style.add_modifier.contains(Modifier::REVERSED))
+    }
+
+    #[test]
+    fn draws_selection_reversed() {
+        let mut editor = Editor::new(Buffer::from_text("abcdef"));
+        editor.resize(20, 4);
+        for _ in 0..2 {
+            editor.apply(Command::MoveRight { select: true });
+        }
+        let terminal = render(&editor, 20, 4);
+
+        assert!(reversed(&terminal, 2, 0));
+        assert!(reversed(&terminal, 3, 0));
+        assert!(!reversed(&terminal, 6, 0));
+    }
+
+    #[test]
+    fn draws_selection_across_lines() {
+        let mut editor = Editor::new(Buffer::from_text("abc\ndef"));
+        editor.resize(20, 4);
+        editor.apply(Command::SelectAll);
+        let terminal = render(&editor, 20, 4);
+
+        assert!(reversed(&terminal, 2, 0));
+        assert!(reversed(&terminal, 4, 0));
+        assert!(reversed(&terminal, 2, 1));
+        assert!(reversed(&terminal, 4, 1));
     }
 
     #[test]
