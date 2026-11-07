@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arboard = { version = "3.7.0", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 ropey = { version = "1.6.1", default-features = false }
 unicode-segmentation = "1.13.3"
