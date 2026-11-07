@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -7,6 +9,7 @@ use crate::buffer::{Buffer, BufferId, CharIdx, LineCol};
 pub struct View {
     buffer_id: BufferId,
     cursor: CharIdx,
+    anchor: Option<CharIdx>,
     scroll_line: usize,
     scroll_col: usize,
     goal_col: Option<usize>,
@@ -18,6 +21,7 @@ impl View {
         Self {
             buffer_id,
             cursor: CharIdx::new(0),
+            anchor: None,
             scroll_line: 0,
             scroll_col: 0,
             goal_col: None,
@@ -51,45 +55,79 @@ impl View {
 
     pub fn set_cursor(&mut self, at: CharIdx) {
         self.cursor = at;
+        self.anchor = None;
         self.goal_col = None;
     }
 
-    pub fn move_left(&mut self, buffer: &Buffer) {
-        self.cursor = buffer.prev_grapheme(self.cursor);
+    pub fn click(&mut self, at: CharIdx) {
+        self.cursor = at;
+        self.anchor = Some(at);
         self.goal_col = None;
     }
 
-    pub fn move_right(&mut self, buffer: &Buffer) {
-        self.cursor = buffer.next_grapheme(self.cursor);
+    pub fn extend_to(&mut self, at: CharIdx) {
+        if self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+        self.cursor = at;
         self.goal_col = None;
     }
 
-    pub fn move_up(&mut self, buffer: &Buffer) {
-        self.move_vertical(buffer, -1);
+    pub fn select_all(&mut self, buffer: &Buffer) {
+        self.anchor = Some(CharIdx::new(0));
+        self.cursor = CharIdx::new(buffer.len_chars());
+        self.goal_col = None;
     }
 
-    pub fn move_down(&mut self, buffer: &Buffer) {
-        self.move_vertical(buffer, 1);
+    pub fn selection(&self) -> Option<(CharIdx, CharIdx)> {
+        let anchor = self.anchor?;
+        match anchor.cmp(&self.cursor) {
+            Ordering::Less => Some((anchor, self.cursor)),
+            Ordering::Greater => Some((self.cursor, anchor)),
+            Ordering::Equal => None,
+        }
     }
 
-    pub fn home(&mut self, buffer: &Buffer) {
+    pub fn move_left(&mut self, buffer: &Buffer, select: bool) {
+        self.move_to(buffer.prev_grapheme(self.cursor), select);
+    }
+
+    pub fn move_right(&mut self, buffer: &Buffer, select: bool) {
+        self.move_to(buffer.next_grapheme(self.cursor), select);
+    }
+
+    pub fn move_up(&mut self, buffer: &Buffer, select: bool) {
+        self.move_vertical(buffer, -1, select);
+    }
+
+    pub fn move_down(&mut self, buffer: &Buffer, select: bool) {
+        self.move_vertical(buffer, 1, select);
+    }
+
+    pub fn home(&mut self, buffer: &Buffer, select: bool) {
         let line = buffer.line_col(self.cursor).line;
-        self.cursor = buffer.line_start(line);
-        self.goal_col = None;
+        self.move_to(buffer.line_start(line), select);
     }
 
-    pub fn end(&mut self, buffer: &Buffer) {
+    pub fn end(&mut self, buffer: &Buffer, select: bool) {
         let line = buffer.line_col(self.cursor).line;
-        self.cursor = buffer.line_end(line);
-        self.goal_col = None;
+        self.move_to(buffer.line_end(line), select);
     }
 
-    pub fn page_up(&mut self, buffer: &Buffer, height: usize) {
-        self.move_vertical(buffer, -isize::try_from(height).unwrap_or(isize::MAX));
+    pub fn page_up(&mut self, buffer: &Buffer, height: usize, select: bool) {
+        self.move_vertical(
+            buffer,
+            -isize::try_from(height).unwrap_or(isize::MAX),
+            select,
+        );
     }
 
-    pub fn page_down(&mut self, buffer: &Buffer, height: usize) {
-        self.move_vertical(buffer, isize::try_from(height).unwrap_or(isize::MAX));
+    pub fn page_down(&mut self, buffer: &Buffer, height: usize, select: bool) {
+        self.move_vertical(
+            buffer,
+            isize::try_from(height).unwrap_or(isize::MAX),
+            select,
+        );
     }
 
     pub fn ensure_visible(&mut self, buffer: &Buffer, width: usize, height: usize) {
@@ -110,7 +148,19 @@ impl View {
         }
     }
 
-    fn move_vertical(&mut self, buffer: &Buffer, delta: isize) {
+    fn move_to(&mut self, at: CharIdx, select: bool) {
+        if select {
+            if self.anchor.is_none() {
+                self.anchor = Some(self.cursor);
+            }
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = at;
+        self.goal_col = None;
+    }
+
+    fn move_vertical(&mut self, buffer: &Buffer, delta: isize, select: bool) {
         let line = buffer.line_col(self.cursor).line;
         let goal = self
             .goal_col
@@ -118,7 +168,8 @@ impl View {
         let target = line
             .saturating_add_signed(delta)
             .min(buffer.len_lines() - 1);
-        self.cursor = char_idx_at_display_col(buffer, target, goal, self.tab_width);
+        let at = char_idx_at_display_col(buffer, target, goal, self.tab_width);
+        self.move_to(at, select);
         self.goal_col = Some(goal);
     }
 }
