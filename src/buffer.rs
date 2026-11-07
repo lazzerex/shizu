@@ -52,6 +52,12 @@ pub struct Transaction {
     ops: Vec<Op>,
 }
 
+impl Transaction {
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Op {
     Insert { at: CharIdx, text: String },
@@ -144,6 +150,11 @@ impl Buffer {
 
     pub fn text(&self) -> String {
         self.rope.to_string()
+    }
+
+    pub fn text_range(&self, from: CharIdx, to: CharIdx) -> String {
+        assert!(from.0 <= to.0 && to.0 <= self.len_chars());
+        self.rope.slice(from.0..to.0).to_string()
     }
 
     pub fn len_chars(&self) -> usize {
@@ -326,6 +337,26 @@ impl Buffer {
         let tx = Transaction {
             ops: vec![Op::Delete { at, text }],
         };
+        self.apply(&tx);
+        tx
+    }
+
+    pub fn replace(&mut self, from: CharIdx, to: CharIdx, text: &str) -> Transaction {
+        assert!(from.0 <= to.0 && to.0 <= self.len_chars());
+        let mut ops = Vec::new();
+        if to.0 > from.0 {
+            ops.push(Op::Delete {
+                at: from,
+                text: self.rope.slice(from.0..to.0).to_string(),
+            });
+        }
+        if !text.is_empty() {
+            ops.push(Op::Insert {
+                at: from,
+                text: text.to_owned(),
+            });
+        }
+        let tx = Transaction { ops };
         self.apply(&tx);
         tx
     }
@@ -575,6 +606,39 @@ mod tests {
         assert_eq!(text.text(), "ho");
         text.revert(&deleted);
         assert_eq!(text.text(), "hello");
+    }
+
+    #[test]
+    fn replace_swaps_range_and_reverts() {
+        let mut text = buffer("abcdef");
+        let tx = text.replace(idx(2), idx(4), "XY");
+        assert_eq!(text.text(), "abXYef");
+        text.revert(&tx);
+        assert_eq!(text.text(), "abcdef");
+    }
+
+    #[test]
+    fn replace_with_empty_text_deletes() {
+        let mut text = buffer("abcdef");
+        let tx = text.replace(idx(2), idx(4), "");
+        assert_eq!(text.text(), "abef");
+        text.revert(&tx);
+        assert_eq!(text.text(), "abcdef");
+    }
+
+    #[test]
+    fn empty_replace_is_empty_transaction() {
+        let mut text = buffer("abc");
+        let tx = text.replace(idx(1), idx(1), "");
+        assert!(tx.is_empty());
+        assert_eq!(text.text(), "abc");
+    }
+
+    #[test]
+    fn text_range_slices_across_lines() {
+        let text = buffer("abc\ndef");
+        assert_eq!(text.text_range(idx(1), idx(6)), "bc\nde");
+        assert_eq!(text.text_range(idx(2), idx(2)), "");
     }
 
     #[test]
