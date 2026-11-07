@@ -8,6 +8,8 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{cursor::Show, execute};
 use shizu::buffer::Buffer;
+use shizu::clipboard::Clipboard;
+use shizu::command::Command;
 use shizu::editor::Editor;
 use shizu::{Event, event, keymap, ui};
 
@@ -54,9 +56,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     terminal.draw(|frame| ui::draw(frame, &editor))?;
 
     let events = event::channel()?;
+    let mut clipboard = Clipboard::new();
     while let Ok(event) = events.recv() {
-        let changed = match event {
-            Event::Key(key) => keymap::resolve(&key).is_some_and(|command| editor.apply(command)),
+        let mut changed = match event {
+            Event::Key(key) => {
+                let command = keymap::resolve(&key);
+                if matches!(command, Some(Command::Paste))
+                    && let Some(text) = clipboard.get_text()
+                {
+                    editor.set_clipboard_text(text);
+                }
+                command.is_some_and(|command| editor.apply(command))
+            }
             Event::Mouse(mouse) => {
                 keymap::resolve_mouse(&mouse).is_some_and(|command| editor.apply(command))
             }
@@ -65,6 +76,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 true
             }
         };
+        if let Some(text) = editor.take_clipboard_request()
+            && !clipboard.set_text(&text)
+        {
+            editor.set_message("clipboard unavailable");
+            changed = true;
+        }
         if editor.should_quit() {
             break;
         }
