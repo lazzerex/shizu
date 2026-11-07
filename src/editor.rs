@@ -1,6 +1,6 @@
-use crate::buffer::{Buffer, BufferId, CharIdx};
+use crate::buffer::{Buffer, BufferId, CharIdx, Transaction};
 use crate::command::Command;
-use crate::view::{View, char_idx_at_display_col, gutter_width};
+use crate::view::{View, char_idx_at_display_col, display_col, gutter_width};
 
 #[derive(Debug)]
 pub struct Editor {
@@ -10,12 +10,23 @@ pub struct Editor {
     quit: bool,
     pending_quit: bool,
     message: Option<String>,
+    clipboard: String,
+    pending_clipboard: Option<String>,
+    undo: Vec<Edit>,
+    redo: Vec<Edit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
     pub width: u16,
     pub height: u16,
+}
+
+#[derive(Debug)]
+struct Edit {
+    transaction: Transaction,
+    before: CharIdx,
+    after: CharIdx,
 }
 
 impl Editor {
@@ -30,6 +41,10 @@ impl Editor {
             quit: false,
             pending_quit: false,
             message: None,
+            clipboard: String::new(),
+            pending_clipboard: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
     }
 
@@ -45,6 +60,10 @@ impl Editor {
         self.viewport
     }
 
+    pub fn selection(&self) -> Option<(CharIdx, CharIdx)> {
+        self.view.selection()
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -55,6 +74,18 @@ impl Editor {
 
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()
+    }
+
+    pub fn set_message(&mut self, message: impl Into<String>) {
+        self.message = Some(message.into());
+    }
+
+    pub fn set_clipboard_text(&mut self, text: String) {
+        self.clipboard = text;
+    }
+
+    pub fn take_clipboard_request(&mut self) -> Option<String> {
+        self.pending_clipboard.take()
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
@@ -72,76 +103,262 @@ impl Editor {
         if !matches!(command, Command::Quit) {
             self.pending_quit = false;
         }
-        let index = self.view.buffer_id().index();
-        let height = self.text_height();
-        let buffer = &mut self.buffers[index];
-        let view = &mut self.view;
         match command {
-            Command::MoveLeft => view.move_left(buffer),
-            Command::MoveRight => view.move_right(buffer),
-            Command::MoveUp => view.move_up(buffer),
-            Command::MoveDown => view.move_down(buffer),
-            Command::Home => view.home(buffer),
-            Command::End => view.end(buffer),
-            Command::PageUp => view.page_up(buffer, height),
-            Command::PageDown => view.page_down(buffer, height),
-            Command::Insert(character) => {
-                let mut encoded = [0; 4];
-                let text = character.encode_utf8(&mut encoded);
-                let at = view.cursor();
-                buffer.insert(at, text);
-                view.set_cursor(buffer.next_grapheme(at));
-            }
-            Command::Backspace => {
-                let at = view.cursor();
-                let previous = buffer.prev_grapheme(at);
-                if previous != at {
-                    buffer.delete(previous, at.get() - previous.get());
-                    view.set_cursor(previous);
-                }
-            }
-            Command::Delete => {
-                let at = view.cursor();
-                let next = buffer.next_grapheme(at);
-                if next != at {
-                    buffer.delete(at, next.get() - at.get());
-                    view.set_cursor(at);
-                }
-            }
-            Command::Save => match buffer.save() {
-                Ok(()) => self.message = None,
-                Err(error) => self.message = Some(error.to_string()),
-            },
-            Command::Quit => {
-                if buffer.is_dirty() && !self.pending_quit {
-                    self.pending_quit = true;
-                } else {
-                    self.quit = true;
-                }
-            }
+            Command::MoveLeft { select } => self.move_left(select),
+            Command::MoveRight { select } => self.move_right(select),
+            Command::MoveUp { select } => self.move_up(select),
+            Command::MoveDown { select } => self.move_down(select),
+            Command::Home { select } => self.home(select),
+            Command::End { select } => self.end(select),
+            Command::PageUp { select } => self.page_up(select),
+            Command::PageDown { select } => self.page_down(select),
+            Command::Insert(character) => self.insert(character),
+            Command::Backspace => self.backspace(),
+            Command::Delete => self.delete(),
+            Command::SelectAll => self.select_all(),
+            Command::Cut => self.cut(),
+            Command::Copy => self.copy(),
+            Command::Paste => self.paste(),
+            Command::Undo => self.undo(),
+            Command::Redo => self.redo(),
+            Command::MoveLineUp => self.move_line(-1),
+            Command::MoveLineDown => self.move_line(1),
+            Command::Save => self.save(),
+            Command::Quit => self.request_quit(),
             Command::Cancel => {}
-            Command::Click { column, row } => {
-                let gutter = gutter_width(buffer);
-                if column >= gutter && usize::from(row) < height {
-                    let line = view.scroll_line().saturating_add(usize::from(row));
-                    if line < buffer.len_lines() {
-                        let display =
-                            usize::from(column - gutter).saturating_add(view.scroll_col());
-                        let at = char_idx_at_display_col(buffer, line, display, view.tab_width());
-                        view.set_cursor(at);
-                    }
-                }
-            }
-            Command::ScrollLines(delta) => {
-                let max = buffer.len_lines().saturating_sub(height);
-                let next = view.scroll_line().saturating_add_signed(delta).min(max);
-                view.set_scroll_line(next);
-            }
+            Command::Click { column, row } => self.click(column, row),
+            Command::Drag { column, row } => self.drag(column, row),
+            Command::ScrollLines(delta) => self.scroll_lines(delta),
         }
         if !matches!(command, Command::ScrollLines(_)) {
             self.ensure_visible();
         }
         before != self.snapshot()
+    }
+
+    fn move_left(&mut self, select: bool) {
+        let index = self.view.buffer_id().index();
+        self.view.move_left(&self.buffers[index], select);
+    }
+
+    fn move_right(&mut self, select: bool) {
+        let index = self.view.buffer_id().index();
+        self.view.move_right(&self.buffers[index], select);
+    }
+
+    fn move_up(&mut self, select: bool) {
+        let index = self.view.buffer_id().index();
+        self.view.move_up(&self.buffers[index], select);
+    }
+
+    fn move_down(&mut self, select: bool) {
+        let index = self.view.buffer_id().index();
+        self.view.move_down(&self.buffers[index], select);
+    }
+
+    fn home(&mut self, select: bool) {
+        let index = self.view.buffer_id().index();
+        self.view.home(&self.buffers[index], select);
+    }
+
+    fn end(&mut self, select: bool) {
+        let index = self.view.buffer_id().index();
+        self.view.end(&self.buffers[index], select);
+    }
+
+    fn page_up(&mut self, select: bool) {
+        let height = self.text_height();
+        let index = self.view.buffer_id().index();
+        self.view.page_up(&self.buffers[index], height, select);
+    }
+
+    fn page_down(&mut self, select: bool) {
+        let height = self.text_height();
+        let index = self.view.buffer_id().index();
+        self.view.page_down(&self.buffers[index], height, select);
+    }
+
+    fn insert(&mut self, character: char) {
+        let index = self.view.buffer_id().index();
+        let buffer = &mut self.buffers[index];
+        let view = &mut self.view;
+        let mut encoded = [0; 4];
+        let text = character.encode_utf8(&mut encoded);
+        let cursor = view.cursor();
+        let (transaction, after) = if let Some((from, to)) = view.selection() {
+            let transaction = buffer.replace(from, to, text);
+            (transaction, CharIdx::new(from.get() + 1))
+        } else {
+            let transaction = buffer.insert(cursor, text);
+            (transaction, buffer.next_grapheme(cursor))
+        };
+        view.set_cursor(after);
+        record(&mut self.undo, &mut self.redo, transaction, cursor, after);
+    }
+
+    fn backspace(&mut self) {
+        let index = self.view.buffer_id().index();
+        let buffer = &mut self.buffers[index];
+        let view = &mut self.view;
+        let cursor = view.cursor();
+        let range = if let Some(range) = view.selection() {
+            Some(range)
+        } else {
+            let previous = buffer.prev_grapheme(cursor);
+            (previous != cursor).then_some((previous, cursor))
+        };
+        if let Some((from, to)) = range {
+            let transaction = buffer.replace(from, to, "");
+            view.set_cursor(from);
+            record(&mut self.undo, &mut self.redo, transaction, cursor, from);
+        }
+    }
+
+    fn delete(&mut self) {
+        let index = self.view.buffer_id().index();
+        let buffer = &mut self.buffers[index];
+        let view = &mut self.view;
+        let cursor = view.cursor();
+        let range = if let Some(range) = view.selection() {
+            Some(range)
+        } else {
+            let next = buffer.next_grapheme(cursor);
+            (next != cursor).then_some((cursor, next))
+        };
+        if let Some((from, to)) = range {
+            let transaction = buffer.replace(from, to, "");
+            view.set_cursor(from);
+            record(&mut self.undo, &mut self.redo, transaction, cursor, from);
+        }
+    }
+
+    fn select_all(&mut self) {
+        let index = self.view.buffer_id().index();
+        self.view.select_all(&self.buffers[index]);
+    }
+
+    fn cut(&mut self) {
+        let index = self.view.buffer_id().index();
+        let buffer = &mut self.buffers[index];
+        let view = &mut self.view;
+        let Some((from, to)) = view.selection() else {
+            return;
+        };
+        self.clipboard = buffer.text_range(from, to);
+        self.pending_clipboard = Some(self.clipboard.clone());
+        let cursor = view.cursor();
+        let transaction = buffer.replace(from, to, "");
+        view.set_cursor(from);
+        record(&mut self.undo, &mut self.redo, transaction, cursor, from);
+    }
+
+    fn copy(&mut self) {
+        let index = self.view.buffer_id().index();
+        let buffer = &self.buffers[index];
+        let Some((from, to)) = self.view.selection() else {
+            return;
+        };
+        self.clipboard = buffer.text_range(from, to);
+        self.pending_clipboard = Some(self.clipboard.clone());
+    }
+
+    fn paste(&mut self) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+        let text = self.clipboard.clone();
+        let index = self.view.buffer_id().index();
+        let buffer = &mut self.buffers[index];
+        let view = &mut self.view;
+        let cursor = view.cursor();
+        let (transaction, after) = if let Some((from, to)) = view.selection() {
+            let transaction = buffer.replace(from, to, &text);
+            (transaction, CharIdx::new(from.get() + text.chars().count()))
+        } else {
+            let transaction = buffer.insert(cursor, &text);
+            (
+                transaction,
+                CharIdx::new(cursor.get() + text.chars().count()),
+            )
+        };
+        view.set_cursor(after);
+        record(&mut self.undo, &mut self.redo, transaction, cursor, after);
+    }
+
+    fn undo(&mut self) {
+        let Some(edit) = self.undo.pop() else {
+            return;
+        };
+        let index = self.view.buffer_id().index();
+        self.buffers[index].revert(&edit.transaction);
+        self.view.set_cursor(edit.before);
+        self.redo.push(edit);
+    }
+
+    fn redo(&mut self) {
+        let Some(edit) = self.redo.pop() else {
+            return;
+        };
+        let index = self.view.buffer_id().index();
+        self.buffers[index].apply(&edit.transaction);
+        self.view.set_cursor(edit.after);
+        self.undo.push(edit);
+    }
+
+    fn move_line(&mut self, delta: isize) {
+        let index = self.view.buffer_id().index();
+        let buffer = &mut self.buffers[index];
+        let view = &mut self.view;
+        if let Some((transaction, cursor, after)) = move_line(buffer, view, delta) {
+            record(&mut self.undo, &mut self.redo, transaction, cursor, after);
+        }
+    }
+
+    fn save(&mut self) {
+        let index = self.view.buffer_id().index();
+        match self.buffers[index].save() {
+            Ok(()) => self.message = None,
+            Err(error) => self.message = Some(error.to_string()),
+        }
+    }
+
+    fn request_quit(&mut self) {
+        let index = self.view.buffer_id().index();
+        if self.buffers[index].is_dirty() && !self.pending_quit {
+            self.pending_quit = true;
+        } else {
+            self.quit = true;
+        }
+    }
+
+    fn click(&mut self, column: u16, row: u16) {
+        let height = self.text_height();
+        let index = self.view.buffer_id().index();
+        let at = char_at_screen(&self.buffers[index], &self.view, height, column, row);
+        if let Some(at) = at {
+            self.view.click(at);
+        }
+    }
+
+    fn drag(&mut self, column: u16, row: u16) {
+        let height = self.text_height();
+        let index = self.view.buffer_id().index();
+        let at = char_at_screen(&self.buffers[index], &self.view, height, column, row);
+        if let Some(at) = at {
+            self.view.extend_to(at);
+        }
+    }
+
+    fn scroll_lines(&mut self, delta: isize) {
+        let height = self.text_height();
+        let index = self.view.buffer_id().index();
+        let max = self.buffers[index].len_lines().saturating_sub(height);
+        let next = self
+            .view
+            .scroll_line()
+            .saturating_add_signed(delta)
+            .min(max);
+        self.view.set_scroll_line(next);
     }
 
     fn snapshot(&self) -> State {
@@ -182,6 +399,76 @@ struct State {
     message: Option<String>,
 }
 
+fn record(
+    undo: &mut Vec<Edit>,
+    redo: &mut Vec<Edit>,
+    transaction: Transaction,
+    before: CharIdx,
+    after: CharIdx,
+) {
+    if transaction.is_empty() {
+        return;
+    }
+    undo.push(Edit {
+        transaction,
+        before,
+        after,
+    });
+    redo.clear();
+}
+
+fn char_at_screen(
+    buffer: &Buffer,
+    view: &View,
+    height: usize,
+    column: u16,
+    row: u16,
+) -> Option<CharIdx> {
+    let gutter = gutter_width(buffer);
+    if column < gutter || usize::from(row) >= height {
+        return None;
+    }
+    let line = view.scroll_line().saturating_add(usize::from(row));
+    if line >= buffer.len_lines() {
+        return None;
+    }
+    let display = usize::from(column - gutter).saturating_add(view.scroll_col());
+    Some(char_idx_at_display_col(
+        buffer,
+        line,
+        display,
+        view.tab_width(),
+    ))
+}
+
+fn move_line(
+    buffer: &mut Buffer,
+    view: &mut View,
+    delta: isize,
+) -> Option<(Transaction, CharIdx, CharIdx)> {
+    let line = buffer.line_col(view.cursor()).line;
+    let target = line.checked_add_signed(delta)?;
+    if target >= buffer.len_lines() {
+        return None;
+    }
+    let (first, second) = if delta < 0 {
+        (target, line)
+    } else {
+        (line, target)
+    };
+    let start = buffer.line_start(first);
+    let end = buffer.line_end(second);
+    let text = buffer.text_range(start, end);
+    let (head, tail) = text.split_once('\n')?;
+    let swapped = format!("{tail}\n{head}");
+    let cursor = view.cursor();
+    let display = display_col(buffer, cursor, view.tab_width());
+    let transaction = buffer.replace(start, end, &swapped);
+    let after = char_idx_at_display_col(buffer, target, display, view.tab_width());
+    view.set_cursor(after);
+    Some((transaction, cursor, after))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -208,15 +495,21 @@ mod tests {
             .join("\n")
     }
 
+    fn select(editor: &mut Editor, count: usize) {
+        for _ in 0..count {
+            editor.apply(Command::MoveRight { select: true });
+        }
+    }
+
     #[test]
     fn vertical_movement_keeps_goal_column() {
         let mut editor = editor("abcdef\nxy\nabcdef");
         editor.set_cursor(CharIdx::new(4));
-        assert!(editor.apply(Command::MoveDown));
+        assert!(editor.apply(Command::MoveDown { select: false }));
         assert_eq!(at(&editor), LineCol { line: 1, col: 2 });
-        assert!(editor.apply(Command::MoveDown));
+        assert!(editor.apply(Command::MoveDown { select: false }));
         assert_eq!(at(&editor), LineCol { line: 2, col: 4 });
-        assert!(editor.apply(Command::MoveUp));
+        assert!(editor.apply(Command::MoveUp { select: false }));
         assert_eq!(at(&editor), LineCol { line: 1, col: 2 });
     }
 
@@ -224,32 +517,32 @@ mod tests {
     fn home_and_end_move_within_line() {
         let mut editor = editor("abc\ndef");
         editor.set_cursor(CharIdx::new(5));
-        assert!(editor.apply(Command::Home));
+        assert!(editor.apply(Command::Home { select: false }));
         assert_eq!(at(&editor), LineCol { line: 1, col: 0 });
-        assert!(editor.apply(Command::End));
+        assert!(editor.apply(Command::End { select: false }));
         assert_eq!(at(&editor), LineCol { line: 1, col: 3 });
     }
 
     #[test]
     fn page_down_moves_by_view_height() {
         let mut editor = editor("0\n1\n2\n3\n4\n5\n6\n7\n8\n9");
-        assert!(editor.apply(Command::PageDown));
+        assert!(editor.apply(Command::PageDown { select: false }));
         assert_eq!(at(&editor).line, 9);
-        assert!(editor.apply(Command::PageUp));
+        assert!(editor.apply(Command::PageUp { select: false }));
         assert_eq!(at(&editor).line, 0);
     }
 
     #[test]
     fn vertical_movement_at_first_line_is_not_a_change() {
         let mut editor = editor("abc");
-        assert!(!editor.apply(Command::MoveUp));
+        assert!(!editor.apply(Command::MoveUp { select: false }));
     }
 
     #[test]
     fn scrolling_follows_cursor() {
         let mut editor = editor("0\n1\n2\n3\n4\n5\n6\n7\n8\n9");
         for _ in 0..9 {
-            editor.apply(Command::MoveDown);
+            editor.apply(Command::MoveDown { select: false });
         }
         assert_eq!(editor.view().scroll_line(), 1);
     }
@@ -259,7 +552,7 @@ mod tests {
         let mut editor = editor("abcdefghijklmnopqrstuvwxyz");
         editor.resize(10, 5);
         for _ in 0..25 {
-            editor.apply(Command::MoveRight);
+            editor.apply(Command::MoveRight { select: false });
         }
         assert_eq!(editor.view().scroll_col(), 18);
     }
@@ -400,7 +693,7 @@ mod tests {
         let mut editor = editor("abc");
         editor.apply(Command::Insert('x'));
         editor.apply(Command::Quit);
-        editor.apply(Command::MoveLeft);
+        editor.apply(Command::MoveLeft { select: false });
         assert!(!editor.pending_quit());
     }
 
@@ -452,5 +745,238 @@ mod tests {
         let mut editor = editor("0\n1\n2\n3\n4\n5\n6\n7\n8\n9");
         assert!(!editor.apply(Command::ScrollLines(-3)));
         assert_eq!(editor.view().scroll_line(), 0);
+    }
+
+    #[test]
+    fn shift_right_selects_text() {
+        let mut editor = editor("abcdef");
+        select(&mut editor, 2);
+        assert_eq!(editor.selection(), Some((CharIdx::new(0), CharIdx::new(2))));
+    }
+
+    #[test]
+    fn shift_left_shrinks_selection() {
+        let mut editor = editor("abcdef");
+        select(&mut editor, 3);
+        editor.apply(Command::MoveLeft { select: true });
+        assert_eq!(editor.selection(), Some((CharIdx::new(0), CharIdx::new(2))));
+    }
+
+    #[test]
+    fn plain_movement_clears_selection() {
+        let mut editor = editor("abcdef");
+        select(&mut editor, 2);
+        editor.apply(Command::MoveRight { select: false });
+        assert_eq!(editor.selection(), None);
+    }
+
+    #[test]
+    fn select_all_covers_buffer() {
+        let mut editor = editor("abc\ndef");
+        editor.apply(Command::SelectAll);
+        assert_eq!(editor.selection(), Some((CharIdx::new(0), CharIdx::new(7))));
+    }
+
+    #[test]
+    fn drag_extends_selection_from_click() {
+        let mut editor = editor("abc\ndef");
+        editor.apply(Command::Click { column: 2, row: 0 });
+        editor.apply(Command::Drag { column: 4, row: 0 });
+        assert_eq!(editor.selection(), Some((CharIdx::new(0), CharIdx::new(2))));
+    }
+
+    #[test]
+    fn click_clears_selection() {
+        let mut editor = editor("abc\ndef");
+        select(&mut editor, 2);
+        editor.apply(Command::Click { column: 5, row: 1 });
+        assert_eq!(editor.selection(), None);
+    }
+
+    #[test]
+    fn typing_replaces_selection() {
+        let mut editor = editor("abc");
+        select(&mut editor, 2);
+        assert!(editor.apply(Command::Insert('X')));
+        assert_eq!(editor.buffer().text(), "Xc");
+        assert_eq!(editor.selection(), None);
+        assert_eq!(editor.view().cursor(), CharIdx::new(1));
+    }
+
+    #[test]
+    fn backspace_deletes_selection() {
+        let mut editor = editor("abc");
+        select(&mut editor, 2);
+        assert!(editor.apply(Command::Backspace));
+        assert_eq!(editor.buffer().text(), "c");
+        assert_eq!(editor.view().cursor(), CharIdx::new(0));
+    }
+
+    #[test]
+    fn delete_deletes_selection() {
+        let mut editor = editor("abc");
+        select(&mut editor, 2);
+        assert!(editor.apply(Command::Delete));
+        assert_eq!(editor.buffer().text(), "c");
+    }
+
+    #[test]
+    fn cut_removes_selection_and_requests_clipboard() {
+        let mut editor = editor("abc");
+        select(&mut editor, 2);
+        assert!(editor.apply(Command::Cut));
+        assert_eq!(editor.buffer().text(), "c");
+        assert_eq!(editor.view().cursor(), CharIdx::new(0));
+        assert_eq!(editor.take_clipboard_request().as_deref(), Some("ab"));
+        assert_eq!(editor.take_clipboard_request(), None);
+    }
+
+    #[test]
+    fn copy_keeps_text_and_requests_clipboard() {
+        let mut editor = editor("abc");
+        select(&mut editor, 2);
+        assert!(!editor.apply(Command::Copy));
+        assert_eq!(editor.buffer().text(), "abc");
+        assert_eq!(editor.take_clipboard_request().as_deref(), Some("ab"));
+    }
+
+    #[test]
+    fn copy_without_selection_does_nothing() {
+        let mut editor = editor("abc");
+        assert!(!editor.apply(Command::Copy));
+        assert_eq!(editor.take_clipboard_request(), None);
+    }
+
+    #[test]
+    fn paste_inserts_register() {
+        let mut editor = editor("abc");
+        editor.set_clipboard_text("XY".to_owned());
+        assert!(editor.apply(Command::Paste));
+        assert_eq!(editor.buffer().text(), "XYabc");
+        assert_eq!(editor.view().cursor(), CharIdx::new(2));
+    }
+
+    #[test]
+    fn paste_replaces_selection() {
+        let mut editor = editor("abc");
+        editor.set_clipboard_text("XY".to_owned());
+        select(&mut editor, 1);
+        assert!(editor.apply(Command::Paste));
+        assert_eq!(editor.buffer().text(), "XYbc");
+    }
+
+    #[test]
+    fn undo_restores_text_and_cursor() {
+        let mut editor = editor("abc");
+        editor.set_cursor(CharIdx::new(3));
+        editor.apply(Command::Insert('d'));
+        assert_eq!(editor.buffer().text(), "abcd");
+        assert!(editor.apply(Command::Undo));
+        assert_eq!(editor.buffer().text(), "abc");
+        assert_eq!(editor.view().cursor(), CharIdx::new(3));
+    }
+
+    #[test]
+    fn redo_after_undo() {
+        let mut editor = editor("abc");
+        editor.set_cursor(CharIdx::new(3));
+        editor.apply(Command::Insert('d'));
+        editor.apply(Command::Undo);
+        assert!(editor.apply(Command::Redo));
+        assert_eq!(editor.buffer().text(), "abcd");
+        assert_eq!(editor.view().cursor(), CharIdx::new(4));
+    }
+
+    #[test]
+    fn new_edit_clears_redo() {
+        let mut editor = editor("abc");
+        editor.set_cursor(CharIdx::new(3));
+        editor.apply(Command::Insert('d'));
+        editor.apply(Command::Undo);
+        editor.apply(Command::Insert('x'));
+        assert!(!editor.apply(Command::Redo));
+        assert_eq!(editor.buffer().text(), "abcx");
+    }
+
+    #[test]
+    fn undo_across_paste() {
+        let mut editor = editor("abc");
+        editor.set_clipboard_text("XY".to_owned());
+        editor.apply(Command::Paste);
+        assert_eq!(editor.buffer().text(), "XYabc");
+        assert!(editor.apply(Command::Undo));
+        assert_eq!(editor.buffer().text(), "abc");
+        assert!(editor.apply(Command::Redo));
+        assert_eq!(editor.buffer().text(), "XYabc");
+    }
+
+    #[test]
+    fn undo_after_backspace() {
+        let mut editor = editor("abc");
+        editor.set_cursor(CharIdx::new(3));
+        editor.apply(Command::Backspace);
+        assert_eq!(editor.buffer().text(), "ab");
+        editor.apply(Command::Undo);
+        assert_eq!(editor.buffer().text(), "abc");
+        assert_eq!(editor.view().cursor(), CharIdx::new(3));
+    }
+
+    #[test]
+    fn undo_after_cut_restores_selection_text() {
+        let mut editor = editor("abc");
+        select(&mut editor, 2);
+        editor.apply(Command::Cut);
+        assert!(editor.apply(Command::Undo));
+        assert_eq!(editor.buffer().text(), "abc");
+        assert_eq!(editor.view().cursor(), CharIdx::new(2));
+    }
+
+    #[test]
+    fn move_line_up_swaps_lines() {
+        let mut editor = editor("a\nb\nc");
+        editor.set_cursor(CharIdx::new(2));
+        assert!(editor.apply(Command::MoveLineUp));
+        assert_eq!(editor.buffer().text(), "b\na\nc");
+        assert_eq!(at(&editor), LineCol { line: 0, col: 0 });
+    }
+
+    #[test]
+    fn move_line_down_swaps_lines() {
+        let mut editor = editor("a\nb\nc");
+        assert!(editor.apply(Command::MoveLineDown));
+        assert_eq!(editor.buffer().text(), "b\na\nc");
+        assert_eq!(at(&editor), LineCol { line: 1, col: 0 });
+    }
+
+    #[test]
+    fn move_line_up_at_first_line_is_not_a_change() {
+        let mut editor = editor("a\nb");
+        assert!(!editor.apply(Command::MoveLineUp));
+        assert_eq!(editor.buffer().text(), "a\nb");
+    }
+
+    #[test]
+    fn move_line_down_at_last_line_is_not_a_change() {
+        let mut editor = editor("a\nb");
+        editor.set_cursor(CharIdx::new(2));
+        assert!(!editor.apply(Command::MoveLineDown));
+        assert_eq!(editor.buffer().text(), "a\nb");
+    }
+
+    #[test]
+    fn undo_after_move_line_restores_order() {
+        let mut editor = editor("a\nb");
+        editor.set_cursor(CharIdx::new(2));
+        editor.apply(Command::MoveLineUp);
+        assert!(editor.apply(Command::Undo));
+        assert_eq!(editor.buffer().text(), "a\nb");
+        assert_eq!(editor.view().cursor(), CharIdx::new(2));
+    }
+
+    #[test]
+    fn undo_with_empty_history_is_not_a_change() {
+        let mut editor = editor("abc");
+        assert!(!editor.apply(Command::Undo));
+        assert!(!editor.apply(Command::Redo));
     }
 }
