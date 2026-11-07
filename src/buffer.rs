@@ -12,6 +12,19 @@ use unicode_segmentation::UnicodeSegmentation;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CharIdx(usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BufferId(usize);
+
+impl BufferId {
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
 impl CharIdx {
     pub const fn new(index: usize) -> Self {
         Self(index)
@@ -149,6 +162,27 @@ impl Buffer {
         self.line_ending
     }
 
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub fn line_text(&self, line: usize) -> String {
+        assert!(line < self.len_lines());
+        let (start, content_len) = self.line_bounds(line);
+        self.rope.slice(start..start + content_len).to_string()
+    }
+
+    pub fn line_start(&self, line: usize) -> CharIdx {
+        assert!(line < self.len_lines());
+        CharIdx(self.rope.line_to_char(line))
+    }
+
+    pub fn line_end(&self, line: usize) -> CharIdx {
+        assert!(line < self.len_lines());
+        let (start, content_len) = self.line_bounds(line);
+        CharIdx(start + content_len)
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
     }
@@ -234,7 +268,7 @@ impl Buffer {
             return CharIdx((start + content_len + 1).min(len));
         }
         let mut chars = 0;
-        for grapheme in self.line_content(line).graphemes(true) {
+        for grapheme in self.line_text(line).graphemes(true) {
             chars += grapheme.chars().count();
             if chars > offset {
                 return CharIdx(start + chars);
@@ -257,7 +291,7 @@ impl Buffer {
         }
         let offset = offset.min(content_len);
         let mut chars = 0;
-        for grapheme in self.line_content(line).graphemes(true) {
+        for grapheme in self.line_text(line).graphemes(true) {
             let width = grapheme.chars().count();
             if chars + width >= offset {
                 return CharIdx(start + chars);
@@ -337,11 +371,6 @@ impl Buffer {
             (start, len)
         }
     }
-
-    fn line_content(&self, line: usize) -> String {
-        let (start, content_len) = self.line_bounds(line);
-        self.rope.slice(start..start + content_len).to_string()
-    }
 }
 
 fn fingerprint(metadata: &Metadata) -> Fingerprint {
@@ -396,10 +425,9 @@ fn normalize_line_endings(text: &str) -> (String, LineEnding) {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{Buffer, BufferError, CharIdx, LineCol, LineEnding};
+    use crate::test_support::TempDir;
 
     fn idx(index: usize) -> CharIdx {
         CharIdx::new(index)
@@ -573,31 +601,6 @@ mod tests {
         assert!(!text.is_dirty());
     }
 
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new() -> Self {
-            static COUNTER: AtomicUsize = AtomicUsize::new(0);
-            let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path =
-                std::env::temp_dir().join(format!("shizu-test-{}-{counter}", std::process::id()));
-            fs::create_dir(&path).unwrap();
-            Self { path }
-        }
-
-        fn join(&self, name: &str) -> PathBuf {
-            self.path.join(name)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
     #[test]
     fn unmodified_save_is_byte_identical() {
         let dir = TempDir::new();
@@ -708,7 +711,7 @@ mod tests {
         fs::write(&path, "a\n").unwrap();
         let mut buffer = Buffer::open(&path).unwrap();
         buffer.save().unwrap();
-        for entry in fs::read_dir(&dir.path).unwrap() {
+        for entry in fs::read_dir(dir.path()).unwrap() {
             let name = entry.unwrap().file_name();
             assert!(!name.to_string_lossy().contains(".tmp"));
         }
