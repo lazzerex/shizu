@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod clipboard;
 pub mod command;
 pub mod editor;
 pub mod event;
