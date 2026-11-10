@@ -1,6 +1,55 @@
 use crate::buffer::{Buffer, BufferId, CharIdx, Transaction};
 use crate::command::Command;
+use crate::search;
 use crate::view::{View, char_idx_at_display_col, display_col, gutter_width};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Editor,
+    Find,
+    Replace,
+    GoToLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptField {
+    Find,
+    Replace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptInfo<'a> {
+    pub focus: Focus,
+    pub query: &'a str,
+    pub replacement: &'a str,
+    pub goto: &'a str,
+    pub field: PromptField,
+}
+
+#[derive(Debug)]
+struct Prompt {
+    query: String,
+    replacement: String,
+    goto: String,
+    field: PromptField,
+    origin: CharIdx,
+    matches: Vec<(CharIdx, CharIdx)>,
+    current: Option<usize>,
+}
+
+impl Default for Prompt {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            replacement: String::new(),
+            goto: String::new(),
+            field: PromptField::Find,
+            origin: CharIdx::new(0),
+            matches: Vec::new(),
+            current: None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Editor {
@@ -14,6 +63,8 @@ pub struct Editor {
     pending_clipboard: Option<String>,
     undo: Vec<Edit>,
     redo: Vec<Edit>,
+    focus: Focus,
+    prompt: Prompt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +96,8 @@ impl Editor {
             pending_clipboard: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            focus: Focus::Editor,
+            prompt: Prompt::default(),
         }
     }
 
@@ -62,6 +115,24 @@ impl Editor {
 
     pub fn selection(&self) -> Option<(CharIdx, CharIdx)> {
         self.view.selection()
+    }
+
+    pub fn focus(&self) -> Focus {
+        self.focus
+    }
+
+    pub fn matches(&self) -> &[(CharIdx, CharIdx)] {
+        &self.prompt.matches
+    }
+
+    pub fn prompt_info(&self) -> Option<PromptInfo<'_>> {
+        (self.focus != Focus::Editor).then_some(PromptInfo {
+            focus: self.focus,
+            query: &self.prompt.query,
+            replacement: &self.prompt.replacement,
+            goto: &self.prompt.goto,
+            field: self.prompt.field,
+        })
     }
 
     pub fn should_quit(&self) -> bool {
@@ -100,6 +171,7 @@ impl Editor {
 
     pub fn apply(&mut self, command: Command) -> bool {
         let before = self.snapshot();
+        let revision = self.buffer().revision();
         if !matches!(command, Command::Quit) {
             self.pending_quit = false;
         }
@@ -125,10 +197,25 @@ impl Editor {
             Command::MoveLineDown => self.move_line(1),
             Command::Save => self.save(),
             Command::Quit => self.request_quit(),
-            Command::Cancel => {}
+            Command::Cancel => self.cancel(),
+            Command::OpenFind => self.open_prompt(Focus::Find),
+            Command::OpenReplace => self.open_prompt(Focus::Replace),
+            Command::OpenGoToLine => self.open_prompt(Focus::GoToLine),
+            Command::FindNext => self.find_step(1),
+            Command::FindPrevious => self.find_step(-1),
+            Command::PromptInsert(character) => self.prompt_insert(character),
+            Command::PromptBackspace => self.prompt_backspace(),
+            Command::PromptNext => self.prompt_enter(),
+            Command::PromptPrevious => self.prompt_previous(),
+            Command::PromptToggleField => self.prompt_toggle_field(),
+            Command::ReplaceAll => self.replace_all(),
             Command::Click { column, row } => self.click(column, row),
             Command::Drag { column, row } => self.drag(column, row),
             Command::ScrollLines(delta) => self.scroll_lines(delta),
+        }
+        if self.buffer().revision() != revision {
+            self.prompt.matches.clear();
+            self.prompt.current = None;
         }
         if !matches!(command, Command::ScrollLines(_)) {
             self.ensure_visible();
@@ -331,6 +418,207 @@ impl Editor {
         }
     }
 
+    fn cancel(&mut self) {
+        if self.focus != Focus::Editor {
+            self.focus = Focus::Editor;
+        }
+    }
+
+    fn open_prompt(&mut self, focus: Focus) {
+        self.focus = focus;
+        self.prompt.field = PromptField::Find;
+        match focus {
+            Focus::Find | Focus::Replace => {
+                self.prompt.query.clear();
+                self.prompt.replacement.clear();
+                self.prompt.matches.clear();
+                self.prompt.current = None;
+                self.prompt.origin = self.view.cursor();
+            }
+            Focus::GoToLine => self.prompt.goto.clear(),
+            Focus::Editor => {}
+        }
+    }
+
+    fn refresh_matches(&mut self) {
+        let index = self.view.buffer_id().index();
+        let text = self.buffers[index].text();
+        let starts = search::find_all(&text, &self.prompt.query);
+        let len = self.prompt.query.chars().count();
+        self.prompt.matches = starts
+            .iter()
+            .map(|&start| (CharIdx::new(start), CharIdx::new(start + len)))
+            .collect();
+        self.prompt.current = if self.prompt.matches.is_empty() {
+            None
+        } else {
+            Some(
+                self.prompt
+                    .matches
+                    .iter()
+                    .position(|(from, _)| *from >= self.prompt.origin)
+                    .unwrap_or(0),
+            )
+        };
+    }
+
+    fn reveal_match(&mut self) {
+        if let Some(current) = self.prompt.current {
+            let at = self.prompt.matches[current].0;
+            self.view.set_cursor(at);
+        }
+    }
+
+    fn find_step(&mut self, delta: isize) {
+        if self.prompt.query.is_empty() {
+            return;
+        }
+        if self.prompt.matches.is_empty() {
+            self.prompt.origin = self.view.cursor();
+            self.refresh_matches();
+        }
+        let len = self.prompt.matches.len();
+        if len == 0 {
+            self.message = Some(format!("no matches for \"{}\"", self.prompt.query));
+            return;
+        }
+        let current = match self.prompt.current {
+            Some(current) => {
+                let step = delta.unsigned_abs() % len;
+                if delta < 0 {
+                    (current + len - step) % len
+                } else {
+                    (current + step) % len
+                }
+            }
+            None if delta < 0 => len - 1,
+            None => 0,
+        };
+        self.prompt.current = Some(current);
+        let at = self.prompt.matches[current].0;
+        self.view.set_cursor(at);
+        self.message = None;
+    }
+
+    fn prompt_insert(&mut self, character: char) {
+        match self.focus {
+            Focus::Find => {
+                self.prompt.query.push(character);
+                self.refresh_matches();
+                self.reveal_match();
+            }
+            Focus::Replace => match self.prompt.field {
+                PromptField::Find => {
+                    self.prompt.query.push(character);
+                    self.refresh_matches();
+                    self.reveal_match();
+                }
+                PromptField::Replace => self.prompt.replacement.push(character),
+            },
+            Focus::GoToLine => self.prompt.goto.push(character),
+            Focus::Editor => {}
+        }
+    }
+
+    fn prompt_backspace(&mut self) {
+        match self.focus {
+            Focus::Find => {
+                self.prompt.query.pop();
+                self.refresh_matches();
+                self.reveal_match();
+            }
+            Focus::Replace => match self.prompt.field {
+                PromptField::Find => {
+                    self.prompt.query.pop();
+                    self.refresh_matches();
+                    self.reveal_match();
+                }
+                PromptField::Replace => {
+                    self.prompt.replacement.pop();
+                }
+            },
+            Focus::GoToLine => {
+                self.prompt.goto.pop();
+            }
+            Focus::Editor => {}
+        }
+    }
+
+    fn prompt_enter(&mut self) {
+        match self.focus {
+            Focus::Find | Focus::Replace => self.find_step(1),
+            Focus::GoToLine => self.goto_line(),
+            Focus::Editor => {}
+        }
+    }
+
+    fn prompt_previous(&mut self) {
+        if matches!(self.focus, Focus::Find | Focus::Replace) {
+            self.find_step(-1);
+        }
+    }
+
+    fn prompt_toggle_field(&mut self) {
+        if self.focus == Focus::Replace {
+            self.prompt.field = match self.prompt.field {
+                PromptField::Find => PromptField::Replace,
+                PromptField::Replace => PromptField::Find,
+            };
+        }
+    }
+
+    fn replace_all(&mut self) {
+        if !matches!(self.focus, Focus::Find | Focus::Replace) || self.prompt.query.is_empty() {
+            return;
+        }
+        if self.prompt.matches.is_empty() {
+            self.prompt.origin = self.view.cursor();
+            self.refresh_matches();
+        }
+        let matches: Vec<(CharIdx, CharIdx)> = self.prompt.matches.iter().copied().fold(
+            Vec::new(),
+            |mut kept: Vec<(CharIdx, CharIdx)>, candidate| {
+                if kept.last().is_none_or(|previous| candidate.0 >= previous.1) {
+                    kept.push(candidate);
+                }
+                kept
+            },
+        );
+        let count = matches.len();
+        if count == 0 {
+            self.message = Some(format!("no matches for \"{}\"", self.prompt.query));
+            return;
+        }
+        let replacement = self.prompt.replacement.clone();
+        let index = self.view.buffer_id().index();
+        let before = self.view.cursor();
+        let transaction = self.buffers[index].replace_matches(&matches, &replacement);
+        let after = matches[0].0;
+        self.view.set_cursor(after);
+        record(&mut self.undo, &mut self.redo, transaction, before, after);
+        self.focus = Focus::Editor;
+        self.prompt.matches.clear();
+        self.prompt.current = None;
+        self.message = Some(format!("replaced {count} matches"));
+    }
+
+    fn goto_line(&mut self) {
+        let Ok(number) = self.prompt.goto.trim().parse::<usize>() else {
+            self.message = Some("invalid line number".to_owned());
+            return;
+        };
+        if number == 0 {
+            self.message = Some("invalid line number".to_owned());
+            return;
+        }
+        let index = self.view.buffer_id().index();
+        let line = (number - 1).min(self.buffers[index].len_lines().saturating_sub(1));
+        let at = self.buffers[index].line_start(line);
+        self.view.set_cursor(at);
+        self.focus = Focus::Editor;
+        self.message = None;
+    }
+
     fn click(&mut self, column: u16, row: u16) {
         let height = self.text_height();
         let index = self.view.buffer_id().index();
@@ -366,9 +654,16 @@ impl Editor {
             cursor: self.view.cursor(),
             scroll_line: self.view.scroll_line(),
             scroll_col: self.view.scroll_col(),
+            revision: self.buffer().revision(),
             dirty: self.buffer().is_dirty(),
             pending_quit: self.pending_quit,
             message: self.message.clone(),
+            focus: self.focus,
+            query: self.prompt.query.clone(),
+            replacement: self.prompt.replacement.clone(),
+            goto: self.prompt.goto.clone(),
+            field: self.prompt.field,
+            current: self.prompt.current,
         }
     }
 
@@ -394,9 +689,16 @@ struct State {
     cursor: CharIdx,
     scroll_line: usize,
     scroll_col: usize,
+    revision: u64,
     dirty: bool,
     pending_quit: bool,
     message: Option<String>,
+    focus: Focus,
+    query: String,
+    replacement: String,
+    goto: String,
+    field: PromptField,
+    current: Option<usize>,
 }
 
 fn record(
@@ -473,7 +775,7 @@ fn move_line(
 mod tests {
     use std::fs;
 
-    use super::Editor;
+    use super::{Editor, Focus, PromptField};
     use crate::buffer::{Buffer, CharIdx, LineCol};
     use crate::command::Command;
     use crate::test_support::TempDir;
@@ -978,5 +1280,194 @@ mod tests {
         let mut editor = editor("abc");
         assert!(!editor.apply(Command::Undo));
         assert!(!editor.apply(Command::Redo));
+    }
+
+    fn type_prompt(editor: &mut Editor, text: &str) {
+        for character in text.chars() {
+            editor.apply(Command::PromptInsert(character));
+        }
+    }
+
+    #[test]
+    fn find_prompt_previews_first_match() {
+        let mut editor = editor("one two one");
+        assert!(editor.apply(Command::OpenFind));
+        assert_eq!(editor.focus(), Focus::Find);
+        type_prompt(&mut editor, "one");
+        assert_eq!(editor.matches().len(), 2);
+        assert_eq!(editor.view().cursor(), CharIdx::new(0));
+        assert!(editor.apply(Command::PromptNext));
+        assert_eq!(editor.view().cursor(), CharIdx::new(8));
+        assert!(editor.apply(Command::PromptNext));
+        assert_eq!(editor.view().cursor(), CharIdx::new(0));
+        assert!(editor.apply(Command::PromptPrevious));
+        assert_eq!(editor.view().cursor(), CharIdx::new(8));
+    }
+
+    #[test]
+    fn find_prompt_without_matches_is_empty() {
+        let mut editor = editor("abc");
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "zzz");
+        assert!(editor.matches().is_empty());
+        assert_eq!(editor.focus(), Focus::Find);
+        editor.apply(Command::PromptNext);
+        assert_eq!(editor.view().cursor(), CharIdx::new(0));
+    }
+
+    #[test]
+    fn find_prompt_reports_overlapping_matches() {
+        let mut editor = editor("aaaa");
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "aa");
+        assert_eq!(editor.matches().len(), 3);
+    }
+
+    #[test]
+    fn find_prompt_matches_across_lines() {
+        let mut editor = editor("ab\ncd");
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "b\nc");
+        assert_eq!(editor.matches(), &[(CharIdx::new(1), CharIdx::new(4))]);
+    }
+
+    #[test]
+    fn escape_closes_prompt_and_keeps_query() {
+        let mut editor = editor("abc");
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "b");
+        assert!(editor.apply(Command::Cancel));
+        assert_eq!(editor.focus(), Focus::Editor);
+        assert!(editor.prompt_info().is_none());
+        assert_eq!(editor.matches().len(), 1);
+    }
+
+    #[test]
+    fn edits_clear_matches() {
+        let mut editor = editor("abc");
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "b");
+        editor.apply(Command::Cancel);
+        assert_eq!(editor.matches().len(), 1);
+        editor.apply(Command::Insert('x'));
+        assert!(editor.matches().is_empty());
+    }
+
+    #[test]
+    fn replace_all_is_one_undo_step() {
+        let mut editor = editor("one two one");
+        editor.apply(Command::OpenReplace);
+        type_prompt(&mut editor, "one");
+        assert!(editor.apply(Command::PromptToggleField));
+        type_prompt(&mut editor, "X");
+        assert!(editor.apply(Command::ReplaceAll));
+        assert_eq!(editor.buffer().text(), "X two X");
+        assert_eq!(editor.focus(), Focus::Editor);
+        assert!(
+            editor
+                .message()
+                .is_some_and(|text| text.contains("2 matches"))
+        );
+        assert!(editor.apply(Command::Undo));
+        assert_eq!(editor.buffer().text(), "one two one");
+    }
+
+    #[test]
+    fn replace_all_skips_overlapping_matches() {
+        let mut editor = editor("aaaa");
+        editor.apply(Command::OpenReplace);
+        type_prompt(&mut editor, "aa");
+        assert_eq!(editor.matches().len(), 3);
+        editor.apply(Command::PromptToggleField);
+        type_prompt(&mut editor, "X");
+        assert!(editor.apply(Command::ReplaceAll));
+        assert_eq!(editor.buffer().text(), "XX");
+        assert!(editor.apply(Command::Undo));
+        assert_eq!(editor.buffer().text(), "aaaa");
+    }
+
+    #[test]
+    fn replace_all_without_matches_keeps_prompt_open() {
+        let mut editor = editor("abc");
+        editor.apply(Command::OpenReplace);
+        type_prompt(&mut editor, "zzz");
+        editor.apply(Command::PromptToggleField);
+        type_prompt(&mut editor, "X");
+        assert!(editor.apply(Command::ReplaceAll));
+        assert_eq!(editor.focus(), Focus::Replace);
+        assert_eq!(editor.buffer().text(), "abc");
+        assert!(
+            editor
+                .message()
+                .is_some_and(|text| text.contains("no matches"))
+        );
+    }
+
+    #[test]
+    fn replace_toggle_field_routes_typing() {
+        let mut editor = editor("abc");
+        editor.apply(Command::OpenReplace);
+        type_prompt(&mut editor, "a");
+        editor.apply(Command::PromptToggleField);
+        type_prompt(&mut editor, "Z");
+        let info = editor.prompt_info().expect("prompt open");
+        assert_eq!(info.query, "a");
+        assert_eq!(info.replacement, "Z");
+        assert_eq!(info.field, PromptField::Replace);
+    }
+
+    #[test]
+    fn backspace_edits_active_prompt_field() {
+        let mut editor = editor("abc");
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "ab");
+        assert!(editor.apply(Command::PromptBackspace));
+        let info = editor.prompt_info().expect("prompt open");
+        assert_eq!(info.query, "a");
+    }
+
+    #[test]
+    fn go_to_line_moves_cursor_and_closes_prompt() {
+        let mut editor = editor(&numbered(10));
+        editor.apply(Command::OpenGoToLine);
+        type_prompt(&mut editor, "5");
+        assert!(editor.apply(Command::PromptNext));
+        assert_eq!(at(&editor), LineCol { line: 4, col: 0 });
+        assert_eq!(editor.focus(), Focus::Editor);
+    }
+
+    #[test]
+    fn go_to_line_clamps_past_last_line() {
+        let mut editor = editor(&numbered(3));
+        editor.apply(Command::OpenGoToLine);
+        type_prompt(&mut editor, "99");
+        editor.apply(Command::PromptNext);
+        assert_eq!(at(&editor), LineCol { line: 2, col: 0 });
+    }
+
+    #[test]
+    fn go_to_line_rejects_invalid_number() {
+        let mut editor = editor("abc");
+        editor.set_cursor(CharIdx::new(1));
+        editor.apply(Command::OpenGoToLine);
+        type_prompt(&mut editor, "x");
+        editor.apply(Command::PromptNext);
+        assert_eq!(editor.focus(), Focus::GoToLine);
+        assert_eq!(editor.view().cursor(), CharIdx::new(1));
+        assert!(
+            editor
+                .message()
+                .is_some_and(|text| text.contains("invalid line"))
+        );
+    }
+
+    #[test]
+    fn find_next_after_close_uses_retained_query() {
+        let mut editor = editor("one two one");
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "one");
+        editor.apply(Command::Cancel);
+        assert!(editor.apply(Command::FindNext));
+        assert_eq!(editor.view().cursor(), CharIdx::new(8));
     }
 }
