@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::buffer::{Buffer, CharIdx};
-use crate::editor::Editor;
+use crate::editor::{Editor, Focus, PromptField, PromptInfo};
 use crate::view::{display_col, gutter_width, layout_line};
 
 pub fn draw(frame: &mut Frame, editor: &Editor) {
@@ -31,6 +31,7 @@ fn draw_text(
     let scroll_col = view.scroll_col();
     let tab_width = view.tab_width();
     let selection = editor.selection();
+    let matches = editor.matches();
     let text_x = area.x.saturating_add(gutter);
     let text_right = text_x.saturating_add(text_width);
     let gutter_style = Style::default().add_modifier(Modifier::DIM);
@@ -40,6 +41,7 @@ fn draw_text(
             break;
         }
         let selected = selection_columns(buffer, selection, line);
+        let highlighted = highlight_columns(buffer, matches, line);
         let y = area.y.saturating_add(row);
         let number = format!(
             "{:>width$} ",
@@ -61,6 +63,11 @@ fn draw_text(
             let style =
                 if selected.is_some_and(|(start, end)| cell.start >= start && cell.start < end) {
                     Style::default().add_modifier(Modifier::REVERSED)
+                } else if highlighted
+                    .iter()
+                    .any(|&(start, end)| cell.start >= start && cell.start < end)
+                {
+                    Style::default().add_modifier(Modifier::UNDERLINED)
                 } else {
                     Style::default()
                 };
@@ -69,6 +76,34 @@ fn draw_text(
         }
     }
     draw_cursor(target, editor, area, gutter, text_width, text_height);
+}
+
+fn highlight_columns(
+    buffer: &Buffer,
+    matches: &[(CharIdx, CharIdx)],
+    line: usize,
+) -> Vec<(usize, usize)> {
+    let line_start = buffer.line_start(line);
+    let line_end = buffer.line_end(line);
+    matches
+        .iter()
+        .filter_map(|&(from, to)| {
+            if to <= line_start || from >= line_end {
+                return None;
+            }
+            let start = if from > line_start {
+                buffer.line_col(from).col
+            } else {
+                0
+            };
+            let end = if to < line_end {
+                buffer.line_col(to).col
+            } else {
+                line_end.get() - line_start.get()
+            };
+            (start < end).then_some((start, end))
+        })
+        .collect()
 }
 
 fn selection_columns(
@@ -135,7 +170,9 @@ fn draw_status(target: &mut TuiBuffer, editor: &Editor, area: Rect) {
         return;
     }
     let y = area.y.saturating_add(area.height - 1);
-    let text = if editor.pending_quit() {
+    let text = if let Some(info) = editor.prompt_info() {
+        prompt_text(&info)
+    } else if editor.pending_quit() {
         " Unsaved changes. Press Ctrl+Q again to quit, Esc to cancel ".to_owned()
     } else {
         let buffer = editor.buffer();
@@ -160,6 +197,30 @@ fn draw_status(target: &mut TuiBuffer, editor: &Editor, area: Rect) {
         &padded,
         Style::default().add_modifier(Modifier::REVERSED),
     );
+}
+
+fn prompt_text(info: &PromptInfo<'_>) -> String {
+    match info.focus {
+        Focus::Find => format!(" Find: {} ", info.query),
+        Focus::Replace => {
+            let find = if info.field == PromptField::Find {
+                ">"
+            } else {
+                " "
+            };
+            let replace = if info.field == PromptField::Replace {
+                ">"
+            } else {
+                " "
+            };
+            format!(
+                " {find}Find: {}  {replace}Replace: {}  Tab switch  Ctrl+A all ",
+                info.query, info.replacement
+            )
+        }
+        Focus::GoToLine => format!(" Go to line: {} ", info.goto),
+        Focus::Editor => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -398,5 +459,72 @@ mod tests {
             editor.resize(width, height);
             let _terminal = render(&editor, width, height);
         }
+    }
+
+    fn type_prompt(editor: &mut Editor, text: &str) {
+        for character in text.chars() {
+            editor.apply(Command::PromptInsert(character));
+        }
+    }
+
+    fn underlined(terminal: &Terminal<TestBackend>, x: u16, y: u16) -> bool {
+        terminal
+            .backend()
+            .buffer()
+            .cell((x, y))
+            .map(ratatui::buffer::Cell::style)
+            .is_some_and(|style| style.add_modifier.contains(Modifier::UNDERLINED))
+    }
+
+    #[test]
+    fn find_prompt_replaces_status_row() {
+        let mut editor = Editor::new(Buffer::from_text("abc"));
+        editor.resize(40, 4);
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "b");
+        let terminal = render(&editor, 40, 4);
+
+        assert!(row(&terminal, 3, 40).contains("Find: b"));
+    }
+
+    #[test]
+    fn replace_prompt_shows_both_fields() {
+        let mut editor = Editor::new(Buffer::from_text("abc"));
+        editor.resize(60, 4);
+        editor.apply(Command::OpenReplace);
+        type_prompt(&mut editor, "a");
+        editor.apply(Command::PromptToggleField);
+        type_prompt(&mut editor, "Z");
+        let terminal = render(&editor, 60, 4);
+
+        let bottom = row(&terminal, 3, 60);
+        assert!(bottom.contains("Find: a"));
+        assert!(bottom.contains("Replace: Z"));
+    }
+
+    #[test]
+    fn goto_prompt_shows_line_number() {
+        let mut editor = Editor::new(Buffer::from_text("abc"));
+        editor.resize(40, 4);
+        editor.apply(Command::OpenGoToLine);
+        type_prompt(&mut editor, "12");
+        let terminal = render(&editor, 40, 4);
+
+        assert!(row(&terminal, 3, 40).contains("Go to line: 12"));
+    }
+
+    #[test]
+    fn matches_are_underlined() {
+        let mut editor = Editor::new(Buffer::from_text("abcabc"));
+        editor.resize(40, 4);
+        editor.apply(Command::OpenFind);
+        type_prompt(&mut editor, "abc");
+        let terminal = render(&editor, 40, 4);
+
+        assert!(underlined(&terminal, 3, 0));
+        assert!(underlined(&terminal, 4, 0));
+        assert!(underlined(&terminal, 6, 0));
+        assert!(underlined(&terminal, 7, 0));
+        assert!(!underlined(&terminal, 8, 0));
     }
 }
