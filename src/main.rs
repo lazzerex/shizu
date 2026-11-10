@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Ok(event) = events.recv() {
         let mut changed = match event {
             Event::Key(key) => {
-                let command = keymap::resolve(&key);
+                let command = keymap::resolve(&key, editor.focus());
                 if matches!(command, Some(Command::Paste))
                     && let Some(text) = clipboard.get_text()
                 {
