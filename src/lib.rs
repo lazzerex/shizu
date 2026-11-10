@@ -4,6 +4,7 @@ pub mod command;
 pub mod editor;
 pub mod event;
 pub mod keymap;
+pub mod search;
 pub mod ui;
 pub mod view;
 
