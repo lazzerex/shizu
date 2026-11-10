@@ -165,6 +165,10 @@ impl Buffer {
         self.rope.len_lines()
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn is_empty(&self) -> bool {
         self.rope.len_chars() == 0
     }
@@ -355,6 +359,28 @@ impl Buffer {
                 at: from,
                 text: text.to_owned(),
             });
+        }
+        let tx = Transaction { ops };
+        self.apply(&tx);
+        tx
+    }
+
+    pub fn replace_matches(&mut self, matches: &[(CharIdx, CharIdx)], text: &str) -> Transaction {
+        let mut ops = Vec::new();
+        for &(from, to) in matches.iter().rev() {
+            assert!(from.0 <= to.0 && to.0 <= self.len_chars());
+            if to.0 > from.0 {
+                ops.push(Op::Delete {
+                    at: from,
+                    text: self.rope.slice(from.0..to.0).to_string(),
+                });
+            }
+            if !text.is_empty() {
+                ops.push(Op::Insert {
+                    at: from,
+                    text: text.to_owned(),
+                });
+            }
         }
         let tx = Transaction { ops };
         self.apply(&tx);
@@ -639,6 +665,31 @@ mod tests {
         let text = buffer("abc\ndef");
         assert_eq!(text.text_range(idx(1), idx(6)), "bc\nde");
         assert_eq!(text.text_range(idx(2), idx(2)), "");
+    }
+
+    #[test]
+    fn replace_matches_rewrites_every_range_in_one_transaction() {
+        let mut text = buffer("one two one");
+        let matches = [(idx(0), idx(3)), (idx(8), idx(11))];
+        let tx = text.replace_matches(&matches, "X");
+        assert_eq!(text.text(), "X two X");
+        text.revert(&tx);
+        assert_eq!(text.text(), "one two one");
+    }
+
+    #[test]
+    fn replace_matches_with_empty_text_deletes_all() {
+        let mut text = buffer("aaaa");
+        let matches = [
+            (idx(0), idx(1)),
+            (idx(1), idx(2)),
+            (idx(2), idx(3)),
+            (idx(3), idx(4)),
+        ];
+        let tx = text.replace_matches(&matches, "");
+        assert_eq!(text.text(), "");
+        text.revert(&tx);
+        assert_eq!(text.text(), "aaaa");
     }
 
     #[test]
