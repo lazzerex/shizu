@@ -1,4 +1,6 @@
 use std::io::{self, stdout};
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Instant;
 
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -64,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut editor = Editor::new(buffer);
     editor.set_theme(theme);
     editor.set_tab_width(config.tab_width);
+    editor.set_animation_mode(config.animation);
     if let Some(message) = config_message {
         editor.set_message(message);
     }
@@ -82,24 +85,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let events = event::channel()?;
     let mut clipboard = Clipboard::new();
-    while let Ok(event) = events.recv() {
+    loop {
+        let wait_now = Instant::now();
+        let event = match editor.next_wait(wait_now) {
+            Some(wait) => match events.recv_timeout(wait) {
+                Ok(event) => event,
+                Err(RecvTimeoutError::Timeout) => Event::Tick,
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+            None => match events.recv() {
+                Ok(event) => event,
+                Err(_) => break,
+            },
+        };
+        let now = Instant::now();
         let mut changed = match event {
             Event::Key(key) => {
+                let was_animating = editor.animation_visible(now);
+                editor.note_input(now);
                 let command = keymap::resolve(&key, editor.focus());
                 if matches!(command, Some(Command::Paste))
                     && let Some(text) = clipboard.get_text()
                 {
                     editor.set_clipboard_text(text);
                 }
-                command.is_some_and(|command| editor.apply(command))
+                command.is_some_and(|command| editor.apply(command)) || was_animating
             }
             Event::Mouse(mouse) => {
+                let was_animating = editor.animation_visible(now);
+                editor.note_input(now);
                 keymap::resolve_mouse(&mouse).is_some_and(|command| editor.apply(command))
+                    || was_animating
             }
             Event::Resize(width, height) => {
                 editor.resize(width, height);
                 true
             }
+            Event::Tick => editor.tick(now),
         };
         if let Some(text) = editor.take_clipboard_request()
             && !clipboard.set_text(&text)

@@ -9,6 +9,7 @@ pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize(u16, u16),
+    Tick,
 }
 
 pub fn channel() -> io::Result<Receiver<Event>> {
