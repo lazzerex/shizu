@@ -1,31 +1,37 @@
 # shizu
 
-shizu is a text editor that runs in a terminal. It stays modeless like nano and micro, but adds tree-sitter syntax highlighting, themes, mouse selection, and search and replace; unlike Helix, there are no modes to learn. I built it because [TODO: why]. It's for people who want nano's modeless editing with syntax highlighting they don't have to configure.
-
-![shizu editing a Rust file](docs/screenshot.png)
-
-*Screenshot placeholder.*
+shizu is a text editor that runs in a terminal. It keeps nano's modeless editing but uses tree-sitter for syntax highlighting, and unlike Helix you never switch modes to select, search, or save. I built it because I wanted the highlighting of a modal editor with the keybindings I already know, plus a theme that isn't an afterthought. It's for people who work over SSH and want a capable editor without a plugin setup.
 
 Status: pre-1.0. Editing, saving, search, undo, and syntax highlighting work on Linux; the Windows and macOS code paths are written but untested.
 
+## Why shizu
+
+nano is the closest in feel. shizu keeps modeless editing, then adds tree-sitter parsing, its own themes, and selection and mouse handling that don't feel bolted on.
+
+micro is modeless and extensible through plugins. shizu has no plugin system, and its entire config is two keys.
+
+Helix has the tree-sitter highlighting and a better structural editing model, but it's modal. shizu is not.
+
+The editor is one Rust executable. It runs without a config file, though you can add one for the theme and tab width.
+
 ## Install
 
-shizu isn't published on crates.io yet. Install from a checkout:
+shizu isn't on crates.io. Install straight from the repository:
 
 ```sh
-git clone <repository-url>
-cd shizu
-cargo install --path .
+cargo install --git https://github.com/lazzerex/shizu.git
 ```
 
-Or build a release binary without installing it:
+Or build a release binary from a checkout:
 
 ```sh
+git clone https://github.com/lazzerex/shizu.git
+cd shizu
 cargo build --release
 ./target/release/shizu path/to/file
 ```
 
-Starting without a path opens an empty buffer. It runs without a config file; configuration is optional.
+Starting without a path opens an empty buffer.
 
 ## What it does
 
@@ -72,13 +78,49 @@ tab_width = 4
 
 `theme` accepts `sakura` or `sakura-light`. An unknown theme falls back to `sakura` and shows a message on the status bar. `tab_width` is clamped to at least 1. `NO_COLOR` selects plain styles, and `COLORTERM=truecolor` or `COLORTERM=24bit` selects truecolor; otherwise the 256-color palette is used.
 
-## Design notes
+## How it works
+
+| Layer | Technology | Role |
+| --- | --- | --- |
+| Text | ropey | Rope-backed buffers and cheap line access |
+| Terminal | ratatui + crossterm | Rendering, input, mouse, alternate screen |
+| Highlighting | tree-sitter | Incremental parsing with per-language grammars |
+| Clipboard | arboard | System clipboard integration |
+| Config | serde + toml | Optional theme and tab-width file |
+
+Input flows through one path: a crossterm event becomes an `Event`, `keymap::resolve` turns it into a `Command`, `Editor::apply` mutates the buffer and view, and `ui::draw` renders the result. The command enum is the seam between input and editing logic, which is why the same actions work from keys and the mouse.
 
 The buffer is rope-backed, and the cursor moves by grapheme cluster rather than byte or `char`. Layout uses display width, so wide characters and tabs line up.
 
 Saves write a temporary file in the same directory, sync it, and rename it over the target. The original is never truncated in place.
 
 Syntax highlighting parses a 128-line block around the viewport plus 64 lines of context, and caches spans by buffer revision and window. Cost stays bounded as files grow, at the price of context at the top of the window.
+
+### Source layout
+
+```text
+src/
+  main.rs          terminal setup, event loop, panic-safe restore
+  buffer.rs        rope, transactions, load and atomic save
+  view.rs          cursor, selection, scroll, layout columns
+  editor/          command dispatch, movement, editing, prompts
+  keymap.rs        key and mouse tables, focus-aware resolution
+  search.rs        pure literal matcher
+  syntax/          language registry and highlight cache
+  theme.rs         palettes, color depth, contrast, styles
+  config.rs        optional TOML config
+  ui.rs            frame rendering
+```
+
+## Testing
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+There are 163 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, and highlighting. The terminal itself is exercised with a pty harness on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
 
 ## Non-goals
 
