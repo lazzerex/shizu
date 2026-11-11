@@ -1,9 +1,13 @@
+use std::time::Instant;
+
+use crate::anim::{Bloom, Idle, Mode};
 use crate::buffer::{Buffer, BufferId, CharIdx, Transaction};
 use crate::command::Command;
 use crate::syntax::{HighlightSpan, SyntaxHighlighter};
 use crate::theme::{ColorDepth, Theme};
 use crate::view::{View, gutter_width};
 
+mod animation;
 mod editing;
 mod movement;
 mod prompt;
@@ -71,6 +75,9 @@ pub struct Editor {
     prompt: Prompt,
     theme: Theme,
     syntax: SyntaxHighlighter,
+    mode: Mode,
+    bloom: Bloom,
+    idle: Idle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +113,9 @@ impl Editor {
             prompt: Prompt::default(),
             theme: Theme::sakura(ColorDepth::TrueColor),
             syntax: SyntaxHighlighter::new(),
+            mode: Mode::Idle,
+            bloom: Bloom::new(crate::anim::time_seed()),
+            idle: Idle::new(Instant::now()),
         }
     }
 
@@ -173,6 +183,7 @@ impl Editor {
 
     pub fn set_tab_width(&mut self, width: usize) {
         self.view.set_tab_width(width);
+        self.bloom.clear();
         self.ensure_visible();
         self.refresh_highlights();
     }
@@ -187,6 +198,7 @@ impl Editor {
 
     pub fn resize(&mut self, width: u16, height: u16) {
         self.viewport = Viewport { width, height };
+        self.bloom.clear();
         self.ensure_visible();
         self.refresh_highlights();
     }
