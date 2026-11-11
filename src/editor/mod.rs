@@ -1,7 +1,12 @@
 use crate::buffer::{Buffer, BufferId, CharIdx, Transaction};
 use crate::command::Command;
-use crate::search;
-use crate::view::{View, char_idx_at_display_col, display_col, gutter_width};
+use crate::syntax::{HighlightSpan, SyntaxHighlighter};
+use crate::theme::{ColorDepth, Theme};
+use crate::view::{View, gutter_width};
+
+mod editing;
+mod movement;
+mod prompt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -51,7 +56,6 @@ impl Default for Prompt {
     }
 }
 
-#[derive(Debug)]
 pub struct Editor {
     buffers: Vec<Buffer>,
     view: View,
@@ -65,6 +69,8 @@ pub struct Editor {
     redo: Vec<Edit>,
     focus: Focus,
     prompt: Prompt,
+    theme: Theme,
+    syntax: SyntaxHighlighter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +104,8 @@ impl Editor {
             redo: Vec::new(),
             focus: Focus::Editor,
             prompt: Prompt::default(),
+            theme: Theme::sakura(ColorDepth::TrueColor),
+            syntax: SyntaxHighlighter::new(),
         }
     }
 
@@ -155,6 +163,24 @@ impl Editor {
         self.clipboard = text;
     }
 
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+
+    pub fn set_tab_width(&mut self, width: usize) {
+        self.view.set_tab_width(width);
+        self.ensure_visible();
+        self.refresh_highlights();
+    }
+
+    pub fn highlight(&self, line: usize) -> &[HighlightSpan] {
+        self.syntax.line(line)
+    }
+
     pub fn take_clipboard_request(&mut self) -> Option<String> {
         self.pending_clipboard.take()
     }
@@ -162,11 +188,13 @@ impl Editor {
     pub fn resize(&mut self, width: u16, height: u16) {
         self.viewport = Viewport { width, height };
         self.ensure_visible();
+        self.refresh_highlights();
     }
 
     pub fn set_cursor(&mut self, at: CharIdx) {
         self.view.set_cursor(at);
         self.ensure_visible();
+        self.refresh_highlights();
     }
 
     pub fn apply(&mut self, command: Command) -> bool {
@@ -220,433 +248,8 @@ impl Editor {
         if !matches!(command, Command::ScrollLines(_)) {
             self.ensure_visible();
         }
+        self.refresh_highlights();
         before != self.snapshot()
-    }
-
-    fn move_left(&mut self, select: bool) {
-        let index = self.view.buffer_id().index();
-        self.view.move_left(&self.buffers[index], select);
-    }
-
-    fn move_right(&mut self, select: bool) {
-        let index = self.view.buffer_id().index();
-        self.view.move_right(&self.buffers[index], select);
-    }
-
-    fn move_up(&mut self, select: bool) {
-        let index = self.view.buffer_id().index();
-        self.view.move_up(&self.buffers[index], select);
-    }
-
-    fn move_down(&mut self, select: bool) {
-        let index = self.view.buffer_id().index();
-        self.view.move_down(&self.buffers[index], select);
-    }
-
-    fn home(&mut self, select: bool) {
-        let index = self.view.buffer_id().index();
-        self.view.home(&self.buffers[index], select);
-    }
-
-    fn end(&mut self, select: bool) {
-        let index = self.view.buffer_id().index();
-        self.view.end(&self.buffers[index], select);
-    }
-
-    fn page_up(&mut self, select: bool) {
-        let height = self.text_height();
-        let index = self.view.buffer_id().index();
-        self.view.page_up(&self.buffers[index], height, select);
-    }
-
-    fn page_down(&mut self, select: bool) {
-        let height = self.text_height();
-        let index = self.view.buffer_id().index();
-        self.view.page_down(&self.buffers[index], height, select);
-    }
-
-    fn insert(&mut self, character: char) {
-        let index = self.view.buffer_id().index();
-        let buffer = &mut self.buffers[index];
-        let view = &mut self.view;
-        let mut encoded = [0; 4];
-        let text = character.encode_utf8(&mut encoded);
-        let cursor = view.cursor();
-        let (transaction, after) = if let Some((from, to)) = view.selection() {
-            let transaction = buffer.replace(from, to, text);
-            (transaction, CharIdx::new(from.get() + 1))
-        } else {
-            let transaction = buffer.insert(cursor, text);
-            (transaction, buffer.next_grapheme(cursor))
-        };
-        view.set_cursor(after);
-        record(&mut self.undo, &mut self.redo, transaction, cursor, after);
-    }
-
-    fn backspace(&mut self) {
-        let index = self.view.buffer_id().index();
-        let buffer = &mut self.buffers[index];
-        let view = &mut self.view;
-        let cursor = view.cursor();
-        let range = if let Some(range) = view.selection() {
-            Some(range)
-        } else {
-            let previous = buffer.prev_grapheme(cursor);
-            (previous != cursor).then_some((previous, cursor))
-        };
-        if let Some((from, to)) = range {
-            let transaction = buffer.replace(from, to, "");
-            view.set_cursor(from);
-            record(&mut self.undo, &mut self.redo, transaction, cursor, from);
-        }
-    }
-
-    fn delete(&mut self) {
-        let index = self.view.buffer_id().index();
-        let buffer = &mut self.buffers[index];
-        let view = &mut self.view;
-        let cursor = view.cursor();
-        let range = if let Some(range) = view.selection() {
-            Some(range)
-        } else {
-            let next = buffer.next_grapheme(cursor);
-            (next != cursor).then_some((cursor, next))
-        };
-        if let Some((from, to)) = range {
-            let transaction = buffer.replace(from, to, "");
-            view.set_cursor(from);
-            record(&mut self.undo, &mut self.redo, transaction, cursor, from);
-        }
-    }
-
-    fn select_all(&mut self) {
-        let index = self.view.buffer_id().index();
-        self.view.select_all(&self.buffers[index]);
-    }
-
-    fn cut(&mut self) {
-        let index = self.view.buffer_id().index();
-        let buffer = &mut self.buffers[index];
-        let view = &mut self.view;
-        let Some((from, to)) = view.selection() else {
-            return;
-        };
-        self.clipboard = buffer.text_range(from, to);
-        self.pending_clipboard = Some(self.clipboard.clone());
-        let cursor = view.cursor();
-        let transaction = buffer.replace(from, to, "");
-        view.set_cursor(from);
-        record(&mut self.undo, &mut self.redo, transaction, cursor, from);
-    }
-
-    fn copy(&mut self) {
-        let index = self.view.buffer_id().index();
-        let buffer = &self.buffers[index];
-        let Some((from, to)) = self.view.selection() else {
-            return;
-        };
-        self.clipboard = buffer.text_range(from, to);
-        self.pending_clipboard = Some(self.clipboard.clone());
-    }
-
-    fn paste(&mut self) {
-        if self.clipboard.is_empty() {
-            return;
-        }
-        let text = self.clipboard.clone();
-        let index = self.view.buffer_id().index();
-        let buffer = &mut self.buffers[index];
-        let view = &mut self.view;
-        let cursor = view.cursor();
-        let (transaction, after) = if let Some((from, to)) = view.selection() {
-            let transaction = buffer.replace(from, to, &text);
-            (transaction, CharIdx::new(from.get() + text.chars().count()))
-        } else {
-            let transaction = buffer.insert(cursor, &text);
-            (
-                transaction,
-                CharIdx::new(cursor.get() + text.chars().count()),
-            )
-        };
-        view.set_cursor(after);
-        record(&mut self.undo, &mut self.redo, transaction, cursor, after);
-    }
-
-    fn undo(&mut self) {
-        let Some(edit) = self.undo.pop() else {
-            return;
-        };
-        let index = self.view.buffer_id().index();
-        self.buffers[index].revert(&edit.transaction);
-        self.view.set_cursor(edit.before);
-        self.redo.push(edit);
-    }
-
-    fn redo(&mut self) {
-        let Some(edit) = self.redo.pop() else {
-            return;
-        };
-        let index = self.view.buffer_id().index();
-        self.buffers[index].apply(&edit.transaction);
-        self.view.set_cursor(edit.after);
-        self.undo.push(edit);
-    }
-
-    fn move_line(&mut self, delta: isize) {
-        let index = self.view.buffer_id().index();
-        let buffer = &mut self.buffers[index];
-        let view = &mut self.view;
-        if let Some((transaction, cursor, after)) = move_line(buffer, view, delta) {
-            record(&mut self.undo, &mut self.redo, transaction, cursor, after);
-        }
-    }
-
-    fn save(&mut self) {
-        let index = self.view.buffer_id().index();
-        match self.buffers[index].save() {
-            Ok(()) => self.message = None,
-            Err(error) => self.message = Some(error.to_string()),
-        }
-    }
-
-    fn request_quit(&mut self) {
-        let index = self.view.buffer_id().index();
-        if self.buffers[index].is_dirty() && !self.pending_quit {
-            self.pending_quit = true;
-        } else {
-            self.quit = true;
-        }
-    }
-
-    fn cancel(&mut self) {
-        if self.focus != Focus::Editor {
-            self.focus = Focus::Editor;
-        }
-    }
-
-    fn open_prompt(&mut self, focus: Focus) {
-        self.focus = focus;
-        self.prompt.field = PromptField::Find;
-        match focus {
-            Focus::Find | Focus::Replace => {
-                self.prompt.query.clear();
-                self.prompt.replacement.clear();
-                self.prompt.matches.clear();
-                self.prompt.current = None;
-                self.prompt.origin = self.view.cursor();
-            }
-            Focus::GoToLine => self.prompt.goto.clear(),
-            Focus::Editor => {}
-        }
-    }
-
-    fn refresh_matches(&mut self) {
-        let index = self.view.buffer_id().index();
-        let text = self.buffers[index].text();
-        let starts = search::find_all(&text, &self.prompt.query);
-        let len = self.prompt.query.chars().count();
-        self.prompt.matches = starts
-            .iter()
-            .map(|&start| (CharIdx::new(start), CharIdx::new(start + len)))
-            .collect();
-        self.prompt.current = if self.prompt.matches.is_empty() {
-            None
-        } else {
-            Some(
-                self.prompt
-                    .matches
-                    .iter()
-                    .position(|(from, _)| *from >= self.prompt.origin)
-                    .unwrap_or(0),
-            )
-        };
-    }
-
-    fn reveal_match(&mut self) {
-        if let Some(current) = self.prompt.current {
-            let at = self.prompt.matches[current].0;
-            self.view.set_cursor(at);
-        }
-    }
-
-    fn find_step(&mut self, delta: isize) {
-        if self.prompt.query.is_empty() {
-            return;
-        }
-        if self.prompt.matches.is_empty() {
-            self.prompt.origin = self.view.cursor();
-            self.refresh_matches();
-        }
-        let len = self.prompt.matches.len();
-        if len == 0 {
-            self.message = Some(format!("no matches for \"{}\"", self.prompt.query));
-            return;
-        }
-        let current = match self.prompt.current {
-            Some(current) => {
-                let step = delta.unsigned_abs() % len;
-                if delta < 0 {
-                    (current + len - step) % len
-                } else {
-                    (current + step) % len
-                }
-            }
-            None if delta < 0 => len - 1,
-            None => 0,
-        };
-        self.prompt.current = Some(current);
-        let at = self.prompt.matches[current].0;
-        self.view.set_cursor(at);
-        self.message = None;
-    }
-
-    fn prompt_insert(&mut self, character: char) {
-        match self.focus {
-            Focus::Find => {
-                self.prompt.query.push(character);
-                self.refresh_matches();
-                self.reveal_match();
-            }
-            Focus::Replace => match self.prompt.field {
-                PromptField::Find => {
-                    self.prompt.query.push(character);
-                    self.refresh_matches();
-                    self.reveal_match();
-                }
-                PromptField::Replace => self.prompt.replacement.push(character),
-            },
-            Focus::GoToLine => self.prompt.goto.push(character),
-            Focus::Editor => {}
-        }
-    }
-
-    fn prompt_backspace(&mut self) {
-        match self.focus {
-            Focus::Find => {
-                self.prompt.query.pop();
-                self.refresh_matches();
-                self.reveal_match();
-            }
-            Focus::Replace => match self.prompt.field {
-                PromptField::Find => {
-                    self.prompt.query.pop();
-                    self.refresh_matches();
-                    self.reveal_match();
-                }
-                PromptField::Replace => {
-                    self.prompt.replacement.pop();
-                }
-            },
-            Focus::GoToLine => {
-                self.prompt.goto.pop();
-            }
-            Focus::Editor => {}
-        }
-    }
-
-    fn prompt_enter(&mut self) {
-        match self.focus {
-            Focus::Find | Focus::Replace => self.find_step(1),
-            Focus::GoToLine => self.goto_line(),
-            Focus::Editor => {}
-        }
-    }
-
-    fn prompt_previous(&mut self) {
-        if matches!(self.focus, Focus::Find | Focus::Replace) {
-            self.find_step(-1);
-        }
-    }
-
-    fn prompt_toggle_field(&mut self) {
-        if self.focus == Focus::Replace {
-            self.prompt.field = match self.prompt.field {
-                PromptField::Find => PromptField::Replace,
-                PromptField::Replace => PromptField::Find,
-            };
-        }
-    }
-
-    fn replace_all(&mut self) {
-        if !matches!(self.focus, Focus::Find | Focus::Replace) || self.prompt.query.is_empty() {
-            return;
-        }
-        if self.prompt.matches.is_empty() {
-            self.prompt.origin = self.view.cursor();
-            self.refresh_matches();
-        }
-        let matches: Vec<(CharIdx, CharIdx)> = self.prompt.matches.iter().copied().fold(
-            Vec::new(),
-            |mut kept: Vec<(CharIdx, CharIdx)>, candidate| {
-                if kept.last().is_none_or(|previous| candidate.0 >= previous.1) {
-                    kept.push(candidate);
-                }
-                kept
-            },
-        );
-        let count = matches.len();
-        if count == 0 {
-            self.message = Some(format!("no matches for \"{}\"", self.prompt.query));
-            return;
-        }
-        let replacement = self.prompt.replacement.clone();
-        let index = self.view.buffer_id().index();
-        let before = self.view.cursor();
-        let transaction = self.buffers[index].replace_matches(&matches, &replacement);
-        let after = matches[0].0;
-        self.view.set_cursor(after);
-        record(&mut self.undo, &mut self.redo, transaction, before, after);
-        self.focus = Focus::Editor;
-        self.prompt.matches.clear();
-        self.prompt.current = None;
-        self.message = Some(format!("replaced {count} matches"));
-    }
-
-    fn goto_line(&mut self) {
-        let Ok(number) = self.prompt.goto.trim().parse::<usize>() else {
-            self.message = Some("invalid line number".to_owned());
-            return;
-        };
-        if number == 0 {
-            self.message = Some("invalid line number".to_owned());
-            return;
-        }
-        let index = self.view.buffer_id().index();
-        let line = (number - 1).min(self.buffers[index].len_lines().saturating_sub(1));
-        let at = self.buffers[index].line_start(line);
-        self.view.set_cursor(at);
-        self.focus = Focus::Editor;
-        self.message = None;
-    }
-
-    fn click(&mut self, column: u16, row: u16) {
-        let height = self.text_height();
-        let index = self.view.buffer_id().index();
-        let at = char_at_screen(&self.buffers[index], &self.view, height, column, row);
-        if let Some(at) = at {
-            self.view.click(at);
-        }
-    }
-
-    fn drag(&mut self, column: u16, row: u16) {
-        let height = self.text_height();
-        let index = self.view.buffer_id().index();
-        let at = char_at_screen(&self.buffers[index], &self.view, height, column, row);
-        if let Some(at) = at {
-            self.view.extend_to(at);
-        }
-    }
-
-    fn scroll_lines(&mut self, delta: isize) {
-        let height = self.text_height();
-        let index = self.view.buffer_id().index();
-        let max = self.buffers[index].len_lines().saturating_sub(height);
-        let next = self
-            .view
-            .scroll_line()
-            .saturating_add_signed(delta)
-            .min(max);
-        self.view.set_scroll_line(next);
     }
 
     fn snapshot(&self) -> State {
@@ -681,6 +284,14 @@ impl Editor {
         let index = self.view.buffer_id().index();
         let buffer = &self.buffers[index];
         self.view.ensure_visible(buffer, width, height);
+    }
+
+    fn refresh_highlights(&mut self) {
+        let first_line = self.view.scroll_line();
+        let line_count = self.text_height();
+        let index = self.view.buffer_id().index();
+        let buffer = &self.buffers[index];
+        self.syntax.ensure(buffer, first_line, line_count);
     }
 }
 
@@ -717,58 +328,6 @@ fn record(
         after,
     });
     redo.clear();
-}
-
-fn char_at_screen(
-    buffer: &Buffer,
-    view: &View,
-    height: usize,
-    column: u16,
-    row: u16,
-) -> Option<CharIdx> {
-    let gutter = gutter_width(buffer);
-    if column < gutter || usize::from(row) >= height {
-        return None;
-    }
-    let line = view.scroll_line().saturating_add(usize::from(row));
-    if line >= buffer.len_lines() {
-        return None;
-    }
-    let display = usize::from(column - gutter).saturating_add(view.scroll_col());
-    Some(char_idx_at_display_col(
-        buffer,
-        line,
-        display,
-        view.tab_width(),
-    ))
-}
-
-fn move_line(
-    buffer: &mut Buffer,
-    view: &mut View,
-    delta: isize,
-) -> Option<(Transaction, CharIdx, CharIdx)> {
-    let line = buffer.line_col(view.cursor()).line;
-    let target = line.checked_add_signed(delta)?;
-    if target >= buffer.len_lines() {
-        return None;
-    }
-    let (first, second) = if delta < 0 {
-        (target, line)
-    } else {
-        (line, target)
-    };
-    let start = buffer.line_start(first);
-    let end = buffer.line_end(second);
-    let text = buffer.text_range(start, end);
-    let (head, tail) = text.split_once('\n')?;
-    let swapped = format!("{tail}\n{head}");
-    let cursor = view.cursor();
-    let display = display_col(buffer, cursor, view.tab_width());
-    let transaction = buffer.replace(start, end, &swapped);
-    let after = char_idx_at_display_col(buffer, target, display, view.tab_width());
-    view.set_cursor(after);
-    Some((transaction, cursor, after))
 }
 
 #[cfg(test)]
