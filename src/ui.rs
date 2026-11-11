@@ -3,11 +3,27 @@ use ratatui::buffer::Buffer as TuiBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
+use crate::anim::{MIN_HEIGHT, MIN_WIDTH};
 use crate::buffer::{Buffer, CharIdx};
 use crate::editor::{Editor, Focus, PromptField, PromptInfo};
 use crate::syntax::HighlightSpan;
 use crate::theme::Theme;
 use crate::view::{display_col, gutter_width, layout_line};
+
+const WELCOME_LINES: &[&str] = &[
+    "        .-~~~-.",
+    "  .-~~'         `~~-.",
+    " (        shizu       )",
+    "  `-.._          _..-'",
+    "        `------'",
+    "",
+    "Ctrl+S save    Ctrl+Q quit    Ctrl+F find",
+    "Ctrl+R replace    Ctrl+G go to line",
+    "Ctrl+A select all    Alt+Up/Down move line",
+    "Open a file: shizu path/to/file",
+];
+
+const WELCOME_BRANCH_LINES: usize = 5;
 
 pub fn draw(frame: &mut Frame, editor: &Editor) {
     let area = frame.area();
@@ -16,8 +32,126 @@ pub fn draw(frame: &mut Frame, editor: &Editor) {
     let text_width = area.width.saturating_sub(gutter);
     let buffer = frame.buffer_mut();
     buffer.set_style(area, editor.theme().background_style());
-    draw_text(buffer, editor, area, gutter, text_width, text_height);
+    if editor.welcome_visible() {
+        draw_welcome(buffer, editor, area, gutter, text_width, text_height);
+    } else {
+        draw_text(buffer, editor, area, gutter, text_width, text_height);
+    }
+    draw_petals(buffer, editor, area, gutter, text_width, text_height);
     draw_status(buffer, editor, area);
+}
+
+fn draw_welcome(
+    target: &mut TuiBuffer,
+    editor: &Editor,
+    area: Rect,
+    gutter: u16,
+    text_width: u16,
+    text_height: u16,
+) {
+    let rows = usize::from(text_height);
+    let columns = usize::from(text_width);
+    if rows == 0 || columns == 0 {
+        return;
+    }
+    let start = rows.saturating_sub(WELCOME_LINES.len()) / 2;
+    for (index, line) in WELCOME_LINES.iter().enumerate() {
+        let row = start + index;
+        if row >= rows {
+            break;
+        }
+        let offset = columns.saturating_sub(line.chars().count()) / 2;
+        let x = area
+            .x
+            .saturating_add(gutter)
+            .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
+        let y = area
+            .y
+            .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+        let style = if index < WELCOME_BRANCH_LINES {
+            editor.theme().petal_style()
+        } else {
+            editor.theme().line_number_style()
+        };
+        target.set_string(x, y, line, style);
+    }
+}
+
+fn draw_petals(
+    target: &mut TuiBuffer,
+    editor: &Editor,
+    area: Rect,
+    gutter: u16,
+    text_width: u16,
+    text_height: u16,
+) {
+    if text_width < MIN_WIDTH || text_height < MIN_HEIGHT {
+        return;
+    }
+    let style = editor.theme().petal_style();
+    for petal in editor.petals() {
+        if petal.column >= text_width
+            || petal.row >= text_height
+            || text_cell_occupied(editor, petal.column, petal.row, text_width, text_height)
+        {
+            continue;
+        }
+        let x = area.x.saturating_add(gutter).saturating_add(petal.column);
+        let y = area.y.saturating_add(petal.row);
+        let Some(cell) = target.cell_mut((x, y)) else {
+            continue;
+        };
+        cell.set_symbol(&petal.glyph.to_string());
+        cell.set_style(style);
+    }
+}
+
+fn text_cell_occupied(
+    editor: &Editor,
+    column: u16,
+    row: u16,
+    text_width: u16,
+    text_height: u16,
+) -> bool {
+    if editor.welcome_visible() {
+        return welcome_cell_occupied(column, row, text_width, text_height);
+    }
+    let buffer = editor.buffer();
+    let view = editor.view();
+    let line = view.scroll_line() + usize::from(row);
+    if line >= buffer.len_lines() {
+        return false;
+    }
+    let occupied: usize = layout_line(&buffer.line_text(line), view.tab_width())
+        .iter()
+        .map(|cell| cell.width)
+        .sum();
+    if usize::from(column) + view.scroll_col() < occupied {
+        return true;
+    }
+    let pos = buffer.line_col(view.cursor());
+    if pos.line == line {
+        let cursor_column = display_col(buffer, view.cursor(), view.tab_width());
+        if cursor_column.checked_sub(view.scroll_col()) == Some(usize::from(column)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn welcome_cell_occupied(column: u16, row: u16, text_width: u16, text_height: u16) -> bool {
+    let rows = usize::from(text_height);
+    let columns = usize::from(text_width);
+    let start = rows.saturating_sub(WELCOME_LINES.len()) / 2;
+    let Some(index) = usize::from(row).checked_sub(start) else {
+        return false;
+    };
+    let Some(line) = WELCOME_LINES.get(index) else {
+        return false;
+    };
+    let offset = columns.saturating_sub(line.chars().count()) / 2;
+    let column = usize::from(column);
+    column >= offset && column < offset + line.chars().count()
 }
 
 fn draw_text(
@@ -232,12 +366,14 @@ fn prompt_text(info: &PromptInfo<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::Instant;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::{Color, Modifier};
 
     use super::draw;
+    use crate::anim::{IDLE_DELAY, Mode};
     use crate::buffer::{Buffer, CharIdx};
     use crate::command::Command;
     use crate::editor::Editor;
@@ -248,6 +384,17 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, editor)).unwrap();
         terminal
+    }
+
+    fn animated(text: &str, seed: u64) -> Editor {
+        let mut editor = Editor::new(Buffer::from_text(text));
+        editor.resize(40, 10);
+        editor.set_animation_seed(seed);
+        editor.set_animation_mode(Mode::Idle);
+        let now = Instant::now();
+        editor.note_input(now);
+        assert!(editor.tick(now + IDLE_DELAY));
+        editor
     }
 
     fn symbol(terminal: &Terminal<TestBackend>, x: u16, y: u16) -> String {
@@ -582,5 +729,114 @@ mod tests {
         let terminal = render(&editor, 20, 4);
 
         assert_eq!(symbol(&terminal, 4, 0), "x");
+    }
+
+    #[test]
+    fn petals_never_overwrite_text_or_chrome() {
+        let editor = animated("abc\ndef", 3);
+        let terminal = render(&editor, 40, 10);
+
+        assert_eq!(symbol(&terminal, 2, 0), "a");
+        assert_eq!(symbol(&terminal, 3, 0), "b");
+        assert_eq!(symbol(&terminal, 4, 0), "c");
+        assert_eq!(symbol(&terminal, 2, 1), "d");
+        assert_eq!(symbol(&terminal, 0, 0), "1");
+        assert!(row(&terminal, 9, 40).contains("[No Name]"));
+    }
+
+    #[test]
+    fn petals_appear_on_empty_cells() {
+        let editor = animated("x", 3);
+        let terminal = render(&editor, 40, 10);
+        let painted = editor
+            .petals()
+            .filter(|petal| petal.column < 38 && petal.row < 9)
+            .filter(|petal| {
+                symbol(&terminal, 2 + petal.column, petal.row) == petal.glyph.to_string()
+            })
+            .count();
+
+        assert!(painted > 0);
+    }
+
+    #[test]
+    fn petals_keep_selection_and_cursor_styles() {
+        let mut editor = animated("abc", 6);
+        editor.apply(Command::SelectAll);
+        let terminal = render(&editor, 40, 10);
+
+        assert_eq!(symbol(&terminal, 2, 0), "a");
+        assert_eq!(symbol(&terminal, 4, 0), "c");
+        assert!(reversed(&terminal, 2, 0));
+        assert!(reversed(&terminal, 4, 0));
+    }
+
+    #[test]
+    fn off_mode_renders_no_petals() {
+        let mut editor = Editor::new(Buffer::from_text("abc"));
+        editor.resize(40, 10);
+        editor.set_animation_seed(3);
+        editor.set_animation_mode(Mode::Off);
+        let now = Instant::now();
+        editor.note_input(now);
+        assert!(!editor.tick(now + IDLE_DELAY));
+        let terminal = render(&editor, 40, 10);
+
+        assert_eq!(editor.petals().count(), 0);
+        assert_eq!(symbol(&terminal, 2, 0), "a");
+    }
+
+    #[test]
+    fn full_screen_of_text_renders_no_petals() {
+        let text = (0..9)
+            .map(|_| "x".repeat(40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut editor = Editor::new(Buffer::from_text(&text));
+        editor.resize(40, 10);
+        editor.set_animation_seed(4);
+        editor.set_animation_mode(Mode::Idle);
+        let now = Instant::now();
+        editor.note_input(now);
+        assert!(!editor.tick(now + IDLE_DELAY));
+        let terminal = render(&editor, 40, 10);
+
+        for y in 0..9 {
+            for x in 2..40 {
+                assert_eq!(symbol(&terminal, x, y), "x");
+            }
+        }
+        assert_eq!(editor.petals().count(), 0);
+    }
+
+    #[test]
+    fn welcome_screen_shows_branch_and_hints() {
+        let mut editor = Editor::new(Buffer::new());
+        editor.resize(60, 12);
+        let terminal = render(&editor, 60, 12);
+        let text: String = (0..11).map(|y| row(&terminal, y, 60)).collect();
+
+        assert!(text.contains("shizu"));
+        assert!(text.contains("Ctrl+S save"));
+
+        editor.apply(Command::Insert('a'));
+        let terminal = render(&editor, 60, 12);
+        let text: String = (0..11).map(|y| row(&terminal, y, 60)).collect();
+        assert!(!text.contains("Ctrl+S save"));
+        assert_eq!(symbol(&terminal, 2, 0), "a");
+    }
+
+    #[test]
+    fn opened_empty_file_does_not_show_welcome() {
+        let dir = TempDir::new();
+        let path = dir.join("empty.txt");
+        fs::write(&path, "").expect("write empty file");
+        let mut editor = Editor::new(Buffer::open(&path).expect("open empty file"));
+        editor.resize(60, 12);
+        let terminal = render(&editor, 60, 12);
+        let text: String = (0..12).map(|y| row(&terminal, y, 60)).collect();
+
+        assert!(!text.contains("Ctrl+S save"));
+        assert!(text.contains("empty.txt"));
     }
 }
