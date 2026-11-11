@@ -10,7 +10,9 @@ use ratatui::crossterm::{cursor::Show, execute};
 use shizu::buffer::Buffer;
 use shizu::clipboard::Clipboard;
 use shizu::command::Command;
+use shizu::config::{self, Config};
 use shizu::editor::Editor;
+use shizu::theme::{ColorDepth, Theme};
 use shizu::{Event, event, keymap, ui};
 
 struct TerminalGuard;
@@ -36,12 +38,35 @@ fn restore() -> io::Result<()> {
     Ok(())
 }
 
+fn load_config() -> (Config, Option<String>) {
+    let Some(path) = config::default_path() else {
+        return (Config::default(), None);
+    };
+    match Config::load(&path) {
+        Ok(config) => (config, None),
+        Err(error) => (Config::default(), Some(error.to_string())),
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let buffer = match std::env::args_os().nth(1) {
         Some(path) => Buffer::open(path)?,
         None => Buffer::new(),
     };
+    let (config, mut config_message) = load_config();
+    let depth = ColorDepth::detect();
+    let theme = if let Some(theme) = Theme::named(&config.theme, depth) {
+        theme
+    } else {
+        config_message.get_or_insert_with(|| format!("unknown theme: {}", config.theme));
+        Theme::sakura(depth)
+    };
     let mut editor = Editor::new(buffer);
+    editor.set_theme(theme);
+    editor.set_tab_width(config.tab_width);
+    if let Some(message) = config_message {
+        editor.set_message(message);
+    }
 
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
