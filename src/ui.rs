@@ -5,6 +5,8 @@ use ratatui::style::{Modifier, Style};
 
 use crate::buffer::{Buffer, CharIdx};
 use crate::editor::{Editor, Focus, PromptField, PromptInfo};
+use crate::syntax::HighlightSpan;
+use crate::theme::Theme;
 use crate::view::{display_col, gutter_width, layout_line};
 
 pub fn draw(frame: &mut Frame, editor: &Editor) {
@@ -13,6 +15,7 @@ pub fn draw(frame: &mut Frame, editor: &Editor) {
     let text_height = area.height.saturating_sub(1);
     let text_width = area.width.saturating_sub(gutter);
     let buffer = frame.buffer_mut();
+    buffer.set_style(area, editor.theme().background_style());
     draw_text(buffer, editor, area, gutter, text_width, text_height);
     draw_status(buffer, editor, area);
 }
@@ -32,9 +35,10 @@ fn draw_text(
     let tab_width = view.tab_width();
     let selection = editor.selection();
     let matches = editor.matches();
+    let theme = editor.theme();
     let text_x = area.x.saturating_add(gutter);
     let text_right = text_x.saturating_add(text_width);
-    let gutter_style = Style::default().add_modifier(Modifier::DIM);
+    let gutter_style = theme.line_number_style();
     for row in 0..text_height {
         let line = first + usize::from(row);
         if line >= buffer.len_lines() {
@@ -42,6 +46,7 @@ fn draw_text(
         }
         let selected = selection_columns(buffer, selection, line);
         let highlighted = highlight_columns(buffer, matches, line);
+        let spans = editor.highlight(line);
         let y = area.y.saturating_add(row);
         let number = format!(
             "{:>width$} ",
@@ -60,22 +65,27 @@ fn draw_text(
             if x >= text_right {
                 break;
             }
-            let style =
-                if selected.is_some_and(|(start, end)| cell.start >= start && cell.start < end) {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else if highlighted
-                    .iter()
-                    .any(|&(start, end)| cell.start >= start && cell.start < end)
-                {
-                    Style::default().add_modifier(Modifier::UNDERLINED)
-                } else {
-                    Style::default()
-                };
+            let mut style = syntax_style(theme, spans, cell.start);
+            if selected.is_some_and(|(start, end)| cell.start >= start && cell.start < end) {
+                style = style.add_modifier(Modifier::REVERSED);
+            } else if highlighted
+                .iter()
+                .any(|&(start, end)| cell.start >= start && cell.start < end)
+            {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
             target.set_string(x, y, &cell.text, style);
             col += cell.width;
         }
     }
     draw_cursor(target, editor, area, gutter, text_width, text_height);
+}
+
+fn syntax_style(theme: &Theme, spans: &[HighlightSpan], column: usize) -> Style {
+    spans
+        .iter()
+        .find(|span| span.start <= column && column < span.end)
+        .map_or_else(|| theme.text(), |span| theme.style(span.scope))
 }
 
 fn highlight_columns(
@@ -161,7 +171,8 @@ fn draw_cursor(
         .y
         .saturating_add(u16::try_from(pos.line - first).unwrap_or(u16::MAX));
     if let Some(cell) = target.cell_mut((x, y)) {
-        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+        let style = cell.style().add_modifier(Modifier::REVERSED);
+        cell.set_style(style);
     }
 }
 
@@ -191,12 +202,7 @@ fn draw_status(target: &mut TuiBuffer, editor: &Editor, area: Rect) {
         format!(" {name} {dirty}  {}:{} {message} ", pos.line + 1, col)
     };
     let padded = format!("{text:<width$}", width = usize::from(area.width));
-    target.set_string(
-        area.x,
-        y,
-        &padded,
-        Style::default().add_modifier(Modifier::REVERSED),
-    );
+    target.set_string(area.x, y, &padded, editor.theme().status_bar());
 }
 
 fn prompt_text(info: &PromptInfo<'_>) -> String {
@@ -229,13 +235,14 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::style::Modifier;
+    use ratatui::style::{Color, Modifier};
 
     use super::draw;
     use crate::buffer::{Buffer, CharIdx};
     use crate::command::Command;
     use crate::editor::Editor;
     use crate::test_support::TempDir;
+    use crate::theme::{ColorDepth, Theme};
 
     fn render(editor: &Editor, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -526,5 +533,54 @@ mod tests {
         assert!(underlined(&terminal, 6, 0));
         assert!(underlined(&terminal, 7, 0));
         assert!(!underlined(&terminal, 8, 0));
+    }
+
+    #[test]
+    fn draws_syntax_colors_from_theme() {
+        let dir = TempDir::new();
+        let path = dir.join("sample.rs");
+        fs::write(&path, "fn main() {}\n").expect("write source");
+        let mut editor = Editor::new(Buffer::open(&path).expect("open source"));
+        editor.resize(40, 4);
+        editor.set_theme(Theme::sakura(ColorDepth::TrueColor));
+        let terminal = render(&editor, 40, 4);
+
+        let style = terminal
+            .backend()
+            .buffer()
+            .cell((2, 0))
+            .map(ratatui::buffer::Cell::style)
+            .expect("keyword cell");
+        assert_eq!(style.fg, Some(Color::Rgb(0xf4, 0xa6, 0xc0)));
+    }
+
+    #[test]
+    fn switching_theme_changes_styles() {
+        let mut editor = Editor::new(Buffer::from_text("plain"));
+        editor.resize(20, 4);
+        editor.set_theme(Theme::sakura(ColorDepth::TrueColor));
+        let dark = render(&editor, 20, 4);
+        editor.set_theme(Theme::sakura_light(ColorDepth::TrueColor));
+        let light = render(&editor, 20, 4);
+
+        let color = |terminal: &Terminal<TestBackend>| {
+            terminal
+                .backend()
+                .buffer()
+                .cell((2, 0))
+                .map(ratatui::buffer::Cell::style)
+                .and_then(|style| style.fg)
+        };
+        assert_ne!(color(&dark), color(&light));
+    }
+
+    #[test]
+    fn configured_tab_width_changes_layout() {
+        let mut editor = Editor::new(Buffer::from_text("\tx"));
+        editor.resize(20, 4);
+        editor.set_tab_width(2);
+        let terminal = render(&editor, 20, 4);
+
+        assert_eq!(symbol(&terminal, 4, 0), "x");
     }
 }
