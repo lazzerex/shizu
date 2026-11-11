@@ -59,6 +59,10 @@ impl View {
         self.goal_col = None;
     }
 
+    pub fn set_tab_width(&mut self, width: usize) {
+        self.tab_width = width.max(1);
+    }
+
     pub fn click(&mut self, at: CharIdx) {
         self.cursor = at;
         self.anchor = Some(at);
