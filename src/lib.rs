@@ -1,3 +1,4 @@
+pub mod anim;
 pub mod buffer;
 pub mod clipboard;
 pub mod command;
