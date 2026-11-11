@@ -5,11 +5,14 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::anim::Mode;
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub theme: String,
     pub tab_width: usize,
+    pub animation: Mode,
 }
 
 impl Default for Config {
@@ -17,6 +20,7 @@ impl Default for Config {
         Self {
             theme: "sakura".to_owned(),
             tab_width: 4,
+            animation: Mode::Idle,
         }
     }
 }
@@ -70,6 +74,7 @@ mod tests {
     use std::fs;
 
     use super::Config;
+    use crate::anim::Mode;
     use crate::test_support::TempDir;
 
     #[test]
@@ -97,6 +102,38 @@ mod tests {
         let config = Config::load(&path).expect("parse config");
         assert_eq!(config.theme, "sakura");
         assert_eq!(config.tab_width, 8);
+    }
+
+    #[test]
+    fn parses_animation_modes() {
+        let dir = TempDir::new();
+        let path = dir.join("config.toml");
+        for (text, expected) in [
+            ("animation = \"off\"\n", Mode::Off),
+            ("animation = \"welcome\"\n", Mode::Welcome),
+            ("animation = \"idle\"\n", Mode::Idle),
+        ] {
+            fs::write(&path, text).expect("write config");
+            let config = Config::load(&path).expect("parse config");
+            assert_eq!(config.animation, expected);
+        }
+    }
+
+    #[test]
+    fn missing_animation_field_uses_idle() {
+        let dir = TempDir::new();
+        let path = dir.join("config.toml");
+        fs::write(&path, "theme = \"sakura\"\n").expect("write config");
+        let config = Config::load(&path).expect("parse config");
+        assert_eq!(config.animation, Mode::Idle);
+    }
+
+    #[test]
+    fn unknown_animation_is_an_error() {
+        let dir = TempDir::new();
+        let path = dir.join("config.toml");
+        fs::write(&path, "animation = \"fast\"\n").expect("write config");
+        assert!(Config::load(&path).is_err());
     }
 
     #[test]

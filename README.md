@@ -2,13 +2,13 @@
 
 shizu is a text editor that runs in a terminal. It keeps nano's modeless editing but uses tree-sitter for syntax highlighting, and unlike Helix you never switch modes to select, search, or save. I built it because I wanted the highlighting of a modal editor with the keybindings I already know, plus a theme that isn't an afterthought. It's for people who work over SSH and want a capable editor without a plugin setup.
 
-Status: pre-1.0. Editing, saving, search, undo, and syntax highlighting work on Linux; the Windows and macOS code paths are written but untested.
+Status: pre-1.0. Editing, saving, search, undo, syntax highlighting, themes, and animation work on Linux; the Windows and macOS code paths are written but untested.
 
 ## Why shizu
 
 nano is the closest in feel. shizu keeps modeless editing, then adds tree-sitter parsing, its own themes, and selection and mouse handling that don't feel bolted on.
 
-micro is modeless and extensible through plugins. shizu has no plugin system, and its entire config is two keys.
+micro is modeless and extensible through plugins. shizu has no plugin system, and its entire config is three keys.
 
 Helix has the tree-sitter highlighting and a better structural editing model, but it's modal. shizu is not.
 
@@ -39,8 +39,9 @@ Starting without a path opens an empty buffer.
 - Syntax highlighting for Rust, JSON, TOML, Python, JavaScript, JSX, TypeScript, TSX, Go, C, and Bash.
 - Incremental find, replace, replace-all, and go to line.
 - Two themes, `sakura` and `sakura-light`, with truecolor and 256-color palettes and a plain style for `NO_COLOR`.
+- A cherry-blossom welcome screen and optional drifting petals that never cover text.
 - Mouse click, drag, and wheel.
-- Optional config for theme and tab width.
+- Optional config for theme, tab width, and animation.
 
 It also preserves LF/CRLF and the final newline, saves through a temporary file and rename, detects changes on disk before saving, and refuses read-only files or invalid UTF-8.
 
@@ -74,9 +75,12 @@ The config file is optional. Missing files use the defaults.
 ```toml
 theme = "sakura"
 tab_width = 4
+animation = "idle"
 ```
 
 `theme` accepts `sakura` or `sakura-light`. An unknown theme falls back to `sakura` and shows a message on the status bar. `tab_width` is clamped to at least 1. `NO_COLOR` selects plain styles, and `COLORTERM=truecolor` or `COLORTERM=24bit` selects truecolor; otherwise the 256-color palette is used.
+
+`animation` accepts `off`, `welcome`, or `idle`. The default is `idle`: the welcome screen animates, and while editing, petals drift over empty cells after five seconds without a key, click, or scroll. `welcome` animates only the empty start screen. `off` disables animation completely. Petals never cover text, the selection, the cursor, or the status bar. When the locale is not UTF-8, petals use the ASCII fallback `.`, `*`, and `'`.
 
 ## How it works
 
@@ -107,6 +111,7 @@ src/
   keymap.rs        key and mouse tables, focus-aware resolution
   search.rs        pure literal matcher
   syntax/          language registry and highlight cache
+  anim.rs          welcome screen petals, idle timer, glyph fallback
   theme.rs         palettes, color depth, contrast, styles
   config.rs        optional TOML config
   ui.rs            frame rendering
@@ -120,7 +125,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-There are 163 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, and highlighting. The terminal itself is exercised with a pty harness on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
+There are 195 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, and animation. The terminal itself is exercised with a pty harness on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
 
 ## Non-goals
 
