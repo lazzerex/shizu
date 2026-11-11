@@ -1,10 +1,13 @@
 pub mod buffer;
 pub mod clipboard;
 pub mod command;
+pub mod config;
 pub mod editor;
 pub mod event;
 pub mod keymap;
 pub mod search;
+pub mod syntax;
+pub mod theme;
 pub mod ui;
 pub mod view;
 
