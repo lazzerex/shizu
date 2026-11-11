@@ -101,6 +101,7 @@ struct Palette {
     line_number: Rgb,
     status_background: Rgb,
     status_foreground: Rgb,
+    petal: Rgb,
     scopes: [Rgb; SCOPE_COUNT],
 }
 
@@ -197,6 +198,12 @@ impl Theme {
         Style::default().bg(self.color(self.palette.background))
     }
 
+    pub fn petal_style(&self) -> Style {
+        Style::default()
+            .fg(self.color(self.palette.petal))
+            .bg(self.color(self.palette.background))
+    }
+
     fn color(&self, rgb: Rgb) -> Color {
         match self.depth {
             ColorDepth::TrueColor => Color::Rgb(rgb.red, rgb.green, rgb.blue),
@@ -229,6 +236,7 @@ fn sakura_palette() -> Palette {
         line_number: mute,
         status_background: deep_pink,
         status_foreground: background,
+        petal,
         scopes: [
             foreground, sakura, leaf, mute, petal, dusk, dusk, foreground, sakura, foreground,
             petal, sakura, dusk, sakura, deep_pink,
@@ -250,6 +258,7 @@ fn sakura_light_palette() -> Palette {
         line_number: mute,
         status_background: deep_pink,
         status_foreground: background,
+        petal: rgb(0xdf, 0x9a, 0xb2),
         scopes: [
             foreground, deep_pink, leaf, mute, rose, dusk, dusk, foreground, deep_pink, foreground,
             rose, deep_pink, dusk, deep_pink, rose,
@@ -357,6 +366,17 @@ mod tests {
                 "{} line number contrast {line_number}",
                 theme.name()
             );
+        }
+    }
+
+    #[test]
+    fn petal_style_contrasts_with_background() {
+        for theme in [
+            Theme::sakura(ColorDepth::TrueColor),
+            Theme::sakura_light(ColorDepth::TrueColor),
+        ] {
+            let style = theme.petal_style();
+            assert_ne!(style.fg, style.bg, "{} petal", theme.name());
         }
     }
 
