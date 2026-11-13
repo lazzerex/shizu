@@ -118,6 +118,14 @@ const TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
     ),
     (KeyCode::F(3), KeyModifiers::NONE, Command::FindNext),
     (KeyCode::F(3), KeyModifiers::SHIFT, Command::FindPrevious),
+    (
+        KeyCode::Char('b'),
+        KeyModifiers::CONTROL,
+        Command::ToggleSidebar,
+    ),
+    (KeyCode::Char('w'), KeyModifiers::CONTROL, Command::CloseTab),
+    (KeyCode::PageDown, KeyModifiers::CONTROL, Command::NextTab),
+    (KeyCode::PageUp, KeyModifiers::CONTROL, Command::PreviousTab),
 ];
 
 pub fn resolve(key: &KeyEvent, focus: Focus) -> Option<Command> {
@@ -126,6 +134,7 @@ pub fn resolve(key: &KeyEvent, focus: Focus) -> Option<Command> {
     }
     match focus {
         Focus::Editor => resolve_editor(key),
+        Focus::Tree => resolve_tree(key),
         Focus::Find => resolve_find(key),
         Focus::Replace => resolve_replace(key),
         Focus::GoToLine => resolve_goto(key),
@@ -140,6 +149,24 @@ fn resolve_editor(key: &KeyEvent) -> Option<Command> {
         return Some(*command);
     }
     prompt_character(key).map(Command::Insert)
+}
+
+fn resolve_tree(key: &KeyEvent) -> Option<Command> {
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, KeyModifiers::NONE) => Some(Command::TreeUp),
+        (KeyCode::Down, KeyModifiers::NONE) => Some(Command::TreeDown),
+        (KeyCode::Left, KeyModifiers::NONE) => Some(Command::TreeLeft),
+        (KeyCode::Right, KeyModifiers::NONE) => Some(Command::TreeRight),
+        (KeyCode::Enter, KeyModifiers::NONE) => Some(Command::TreeOpen),
+        (KeyCode::Esc, KeyModifiers::NONE) => Some(Command::Cancel),
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => Some(Command::ToggleSidebar),
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => Some(Command::CloseTab),
+        (KeyCode::Char('s'), KeyModifiers::CONTROL) => Some(Command::Save),
+        (KeyCode::Char('q'), KeyModifiers::CONTROL) => Some(Command::Quit),
+        (KeyCode::PageDown, KeyModifiers::CONTROL) => Some(Command::NextTab),
+        (KeyCode::PageUp, KeyModifiers::CONTROL) => Some(Command::PreviousTab),
+        _ => None,
+    }
 }
 
 fn resolve_find(key: &KeyEvent) -> Option<Command> {
@@ -585,6 +612,58 @@ mod tests {
                 Focus::Find
             ),
             None
+        );
+    }
+
+    #[test]
+    fn editor_focus_binds_sidebar_and_tabs() {
+        assert_eq!(
+            resolve_editor(&key(KeyCode::Char('b'), KeyModifiers::CONTROL)),
+            Some(Command::ToggleSidebar)
+        );
+        assert_eq!(
+            resolve_editor(&key(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+            Some(Command::CloseTab)
+        );
+        assert_eq!(
+            resolve_editor(&key(KeyCode::PageDown, KeyModifiers::CONTROL)),
+            Some(Command::NextTab)
+        );
+        assert_eq!(
+            resolve_editor(&key(KeyCode::PageUp, KeyModifiers::CONTROL)),
+            Some(Command::PreviousTab)
+        );
+    }
+
+    #[test]
+    fn tree_focus_navigates_and_can_leave() {
+        assert_eq!(
+            resolve(&key(KeyCode::Up, KeyModifiers::NONE), Focus::Tree),
+            Some(Command::TreeUp)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Down, KeyModifiers::NONE), Focus::Tree),
+            Some(Command::TreeDown)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Left, KeyModifiers::NONE), Focus::Tree),
+            Some(Command::TreeLeft)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Right, KeyModifiers::NONE), Focus::Tree),
+            Some(Command::TreeRight)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Enter, KeyModifiers::NONE), Focus::Tree),
+            Some(Command::TreeOpen)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Esc, KeyModifiers::NONE), Focus::Tree),
+            Some(Command::Cancel)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('b'), KeyModifiers::CONTROL), Focus::Tree),
+            Some(Command::ToggleSidebar)
         );
     }
 }
