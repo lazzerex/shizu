@@ -9,6 +9,7 @@ pub mod keymap;
 pub mod search;
 pub mod syntax;
 pub mod theme;
+pub mod tree;
 pub mod ui;
 pub mod view;
 
