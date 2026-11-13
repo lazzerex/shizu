@@ -81,9 +81,9 @@ impl Editor {
             return false;
         }
         let buffer = self.buffer();
-        let first = self.view.scroll_line();
-        let scroll_col = self.view.scroll_col();
-        let tab_width = self.view.tab_width();
+        let first = self.tabs[self.active].view.scroll_line();
+        let scroll_col = self.tabs[self.active].view.scroll_col();
+        let tab_width = self.tabs[self.active].view.tab_width();
         for row in 0..height {
             let line = first + row;
             if line >= buffer.len_lines() {
