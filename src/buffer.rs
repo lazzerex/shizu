@@ -68,6 +68,7 @@ enum Op {
 pub struct Buffer {
     rope: Rope,
     line_ending: LineEnding,
+    identity: u64,
     revision: u64,
     saved_revision: u64,
     path: Option<PathBuf>,
@@ -141,6 +142,7 @@ impl Buffer {
         Self {
             rope: Rope::from_str(&text),
             line_ending,
+            identity: next_identity(),
             revision: 0,
             saved_revision: 0,
             path: None,
@@ -163,6 +165,10 @@ impl Buffer {
 
     pub fn len_lines(&self) -> usize {
         self.rope.len_lines()
+    }
+
+    pub fn identity(&self) -> u64 {
+        self.identity
     }
 
     pub fn revision(&self) -> u64 {
@@ -453,6 +459,11 @@ fn write_temp(path: &Path, bytes: &[u8], permissions: Permissions) -> io::Result
     file.sync_all()
 }
 
+fn next_identity() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
 fn temp_path(path: &Path) -> io::Result<PathBuf> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -721,7 +732,7 @@ mod tests {
         let dir = TempDir::new();
         let contents = ["", "a", "a\n", "a\nb", "a\r\n", "a\r\nb\r\n"];
         for (index, content) in contents.iter().enumerate() {
-            let path = dir.join(&format!("file-{index}.txt"));
+            let path = dir.join(format!("file-{index}.txt"));
             fs::write(&path, content).unwrap();
             let mut buffer = Buffer::open(&path).unwrap();
             buffer.save().unwrap();
@@ -757,7 +768,7 @@ mod tests {
     fn save_preserves_final_newline_state() {
         let dir = TempDir::new();
         for (index, content) in ["a\nb", "a\nb\n"].iter().enumerate() {
-            let path = dir.join(&format!("final-{index}.txt"));
+            let path = dir.join(format!("final-{index}.txt"));
             fs::write(&path, content).unwrap();
             let mut buffer = Buffer::open(&path).unwrap();
             buffer.insert(idx(0), "x");
