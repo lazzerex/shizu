@@ -5,16 +5,22 @@ use crate::buffer::{Buffer, BufferId, CharIdx, Transaction};
 use crate::command::Command;
 use crate::syntax::{HighlightSpan, SyntaxHighlighter};
 use crate::theme::{ColorDepth, Theme};
+use crate::tree::FileTree;
 use crate::view::{View, gutter_width};
 
 mod animation;
 mod editing;
 mod movement;
 mod prompt;
+mod sidebar;
+mod tabs;
+
+use tabs::Tab;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Editor,
+    Tree,
     Find,
     Replace,
     GoToLine,
@@ -62,15 +68,15 @@ impl Default for Prompt {
 
 pub struct Editor {
     buffers: Vec<Buffer>,
-    view: View,
+    tabs: Vec<Tab>,
+    active: usize,
     viewport: Viewport,
     quit: bool,
     pending_quit: bool,
+    pending_close: bool,
     message: Option<String>,
     clipboard: String,
     pending_clipboard: Option<String>,
-    undo: Vec<Edit>,
-    redo: Vec<Edit>,
     focus: Focus,
     prompt: Prompt,
     theme: Theme,
@@ -78,6 +84,7 @@ pub struct Editor {
     mode: Mode,
     bloom: Bloom,
     idle: Idle,
+    tree: Option<FileTree>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +94,7 @@ pub struct Viewport {
 }
 
 #[derive(Debug)]
-struct Edit {
+pub(super) struct Edit {
     transaction: Transaction,
     before: CharIdx,
     after: CharIdx,
@@ -97,18 +104,18 @@ impl Editor {
     pub fn new(buffer: Buffer) -> Self {
         Self {
             buffers: vec![buffer],
-            view: View::new(BufferId::new(0)),
+            tabs: vec![Tab::new(BufferId::new(0))],
+            active: 0,
             viewport: Viewport {
                 width: 80,
                 height: 24,
             },
             quit: false,
             pending_quit: false,
+            pending_close: false,
             message: None,
             clipboard: String::new(),
             pending_clipboard: None,
-            undo: Vec::new(),
-            redo: Vec::new(),
             focus: Focus::Editor,
             prompt: Prompt::default(),
             theme: Theme::sakura(ColorDepth::TrueColor),
@@ -116,15 +123,16 @@ impl Editor {
             mode: Mode::Idle,
             bloom: Bloom::new(crate::anim::time_seed()),
             idle: Idle::new(Instant::now()),
+            tree: None,
         }
     }
 
     pub fn buffer(&self) -> &Buffer {
-        &self.buffers[self.view.buffer_id().index()]
+        &self.buffers[self.tabs[self.active].view.buffer_id().index()]
     }
 
     pub fn view(&self) -> &View {
-        &self.view
+        &self.tabs[self.active].view
     }
 
     pub fn viewport(&self) -> Viewport {
@@ -132,7 +140,7 @@ impl Editor {
     }
 
     pub fn selection(&self) -> Option<(CharIdx, CharIdx)> {
-        self.view.selection()
+        self.view().selection()
     }
 
     pub fn focus(&self) -> Focus {
@@ -144,7 +152,7 @@ impl Editor {
     }
 
     pub fn prompt_info(&self) -> Option<PromptInfo<'_>> {
-        (self.focus != Focus::Editor).then_some(PromptInfo {
+        matches!(self.focus, Focus::Find | Focus::Replace | Focus::GoToLine).then_some(PromptInfo {
             focus: self.focus,
             query: &self.prompt.query,
             replacement: &self.prompt.replacement,
@@ -159,6 +167,10 @@ impl Editor {
 
     pub fn pending_quit(&self) -> bool {
         self.pending_quit
+    }
+
+    pub fn pending_close(&self) -> bool {
+        self.pending_close
     }
 
     pub fn message(&self) -> Option<&str> {
@@ -182,7 +194,7 @@ impl Editor {
     }
 
     pub fn set_tab_width(&mut self, width: usize) {
-        self.view.set_tab_width(width);
+        self.tabs[self.active].view.set_tab_width(width);
         self.bloom.clear();
         self.ensure_visible();
         self.refresh_highlights();
@@ -204,7 +216,7 @@ impl Editor {
     }
 
     pub fn set_cursor(&mut self, at: CharIdx) {
-        self.view.set_cursor(at);
+        self.tabs[self.active].view.set_cursor(at);
         self.ensure_visible();
         self.refresh_highlights();
     }
@@ -214,6 +226,10 @@ impl Editor {
         let revision = self.buffer().revision();
         if !matches!(command, Command::Quit) {
             self.pending_quit = false;
+        }
+        let closing = self.pending_close;
+        if !matches!(command, Command::CloseTab) {
+            self.pending_close = false;
         }
         match command {
             Command::MoveLeft { select } => self.move_left(select),
@@ -237,7 +253,12 @@ impl Editor {
             Command::MoveLineDown => self.move_line(1),
             Command::Save => self.save(),
             Command::Quit => self.request_quit(),
-            Command::Cancel => self.cancel(),
+            Command::Cancel => {
+                self.cancel();
+                if closing {
+                    self.message = None;
+                }
+            }
             Command::OpenFind => self.open_prompt(Focus::Find),
             Command::OpenReplace => self.open_prompt(Focus::Replace),
             Command::OpenGoToLine => self.open_prompt(Focus::GoToLine),
@@ -252,6 +273,19 @@ impl Editor {
             Command::Click { column, row } => self.click(column, row),
             Command::Drag { column, row } => self.drag(column, row),
             Command::ScrollLines(delta) => self.scroll_lines(delta),
+            Command::ToggleSidebar => self.toggle_sidebar(),
+            Command::CloseTab => self.request_close_tab(),
+            Command::NextTab => {
+                self.next_tab();
+            }
+            Command::PreviousTab => {
+                self.previous_tab();
+            }
+            Command::TreeUp => self.tree_up(),
+            Command::TreeDown => self.tree_down(),
+            Command::TreeLeft => self.tree_left(),
+            Command::TreeRight => self.tree_right(),
+            Command::TreeOpen => self.tree_open(),
         }
         if self.buffer().revision() != revision {
             self.prompt.matches.clear();
@@ -266,12 +300,13 @@ impl Editor {
 
     fn snapshot(&self) -> State {
         State {
-            cursor: self.view.cursor(),
-            scroll_line: self.view.scroll_line(),
-            scroll_col: self.view.scroll_col(),
+            cursor: self.view().cursor(),
+            scroll_line: self.view().scroll_line(),
+            scroll_col: self.view().scroll_col(),
             revision: self.buffer().revision(),
             dirty: self.buffer().is_dirty(),
             pending_quit: self.pending_quit,
+            pending_close: self.pending_close,
             message: self.message.clone(),
             focus: self.focus,
             query: self.prompt.query.clone(),
@@ -279,31 +314,41 @@ impl Editor {
             goto: self.prompt.goto.clone(),
             field: self.prompt.field,
             current: self.prompt.current,
+            tab_count: self.tabs.len(),
+            active_tab: self.active,
+            tree: self
+                .tree
+                .as_ref()
+                .map(|tree| (tree.revision(), tree.visible())),
         }
     }
 
     fn text_width(&self) -> usize {
-        usize::from(self.viewport.width).saturating_sub(usize::from(gutter_width(self.buffer())))
+        usize::from(self.viewport.width)
+            .saturating_sub(usize::from(self.sidebar_width()))
+            .saturating_sub(usize::from(gutter_width(self.buffer())))
     }
 
     fn text_height(&self) -> usize {
-        usize::from(self.viewport.height).saturating_sub(1)
+        usize::from(self.viewport.height)
+            .saturating_sub(1)
+            .saturating_sub(usize::from(self.tab_bar_height()))
     }
 
     fn ensure_visible(&mut self) {
         let width = self.text_width();
         let height = self.text_height();
-        let index = self.view.buffer_id().index();
-        let buffer = &self.buffers[index];
-        self.view.ensure_visible(buffer, width, height);
+        let tab = &mut self.tabs[self.active];
+        let index = tab.view.buffer_id().index();
+        tab.view.ensure_visible(&self.buffers[index], width, height);
     }
 
     fn refresh_highlights(&mut self) {
-        let first_line = self.view.scroll_line();
+        let first_line = self.tabs[self.active].view.scroll_line();
         let line_count = self.text_height();
-        let index = self.view.buffer_id().index();
-        let buffer = &self.buffers[index];
-        self.syntax.ensure(buffer, first_line, line_count);
+        let index = self.tabs[self.active].view.buffer_id().index();
+        self.syntax
+            .ensure(&self.buffers[index], first_line, line_count);
     }
 }
 
@@ -315,6 +360,7 @@ struct State {
     revision: u64,
     dirty: bool,
     pending_quit: bool,
+    pending_close: bool,
     message: Option<String>,
     focus: Focus,
     query: String,
@@ -322,6 +368,9 @@ struct State {
     goto: String,
     field: PromptField,
     current: Option<usize>,
+    tab_count: usize,
+    active_tab: usize,
+    tree: Option<(u64, bool)>,
 }
 
 fn record(
