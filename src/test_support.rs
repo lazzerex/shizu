@@ -16,7 +16,7 @@ impl TempDir {
         Self { path }
     }
 
-    pub(crate) fn join(&self, name: &str) -> PathBuf {
+    pub(crate) fn join(&self, name: impl AsRef<Path>) -> PathBuf {
         self.path.join(name)
     }
 
