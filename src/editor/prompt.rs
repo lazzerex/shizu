@@ -1,4 +1,4 @@
-use super::{Editor, Focus, PromptField, record};
+use super::{Editor, Focus, PromptField};
 use crate::buffer::CharIdx;
 use crate::search;
 
@@ -12,15 +12,15 @@ impl Editor {
                 self.prompt.replacement.clear();
                 self.prompt.matches.clear();
                 self.prompt.current = None;
-                self.prompt.origin = self.view.cursor();
+                self.prompt.origin = self.tabs[self.active].view.cursor();
             }
             Focus::GoToLine => self.prompt.goto.clear(),
-            Focus::Editor => {}
+            Focus::Tree | Focus::Editor => {}
         }
     }
 
     pub(super) fn refresh_matches(&mut self) {
-        let index = self.view.buffer_id().index();
+        let index = self.tabs[self.active].view.buffer_id().index();
         let text = self.buffers[index].text();
         let starts = search::find_all(&text, &self.prompt.query);
         let len = self.prompt.query.chars().count();
@@ -44,7 +44,7 @@ impl Editor {
     pub(super) fn reveal_match(&mut self) {
         if let Some(current) = self.prompt.current {
             let at = self.prompt.matches[current].0;
-            self.view.set_cursor(at);
+            self.tabs[self.active].view.set_cursor(at);
         }
     }
 
@@ -53,7 +53,7 @@ impl Editor {
             return;
         }
         if self.prompt.matches.is_empty() {
-            self.prompt.origin = self.view.cursor();
+            self.prompt.origin = self.tabs[self.active].view.cursor();
             self.refresh_matches();
         }
         let len = self.prompt.matches.len();
@@ -75,7 +75,7 @@ impl Editor {
         };
         self.prompt.current = Some(current);
         let at = self.prompt.matches[current].0;
-        self.view.set_cursor(at);
+        self.tabs[self.active].view.set_cursor(at);
         self.message = None;
     }
 
@@ -95,7 +95,7 @@ impl Editor {
                 PromptField::Replace => self.prompt.replacement.push(character),
             },
             Focus::GoToLine => self.prompt.goto.push(character),
-            Focus::Editor => {}
+            Focus::Tree | Focus::Editor => {}
         }
     }
 
@@ -119,7 +119,7 @@ impl Editor {
             Focus::GoToLine => {
                 self.prompt.goto.pop();
             }
-            Focus::Editor => {}
+            Focus::Tree | Focus::Editor => {}
         }
     }
 
@@ -127,7 +127,7 @@ impl Editor {
         match self.focus {
             Focus::Find | Focus::Replace => self.find_step(1),
             Focus::GoToLine => self.goto_line(),
-            Focus::Editor => {}
+            Focus::Tree | Focus::Editor => {}
         }
     }
 
@@ -151,7 +151,7 @@ impl Editor {
             return;
         }
         if self.prompt.matches.is_empty() {
-            self.prompt.origin = self.view.cursor();
+            self.prompt.origin = self.tabs[self.active].view.cursor();
             self.refresh_matches();
         }
         let matches: Vec<(CharIdx, CharIdx)> = self.prompt.matches.iter().copied().fold(
@@ -169,12 +169,12 @@ impl Editor {
             return;
         }
         let replacement = self.prompt.replacement.clone();
-        let index = self.view.buffer_id().index();
-        let before = self.view.cursor();
+        let index = self.tabs[self.active].view.buffer_id().index();
+        let before = self.tabs[self.active].view.cursor();
         let transaction = self.buffers[index].replace_matches(&matches, &replacement);
         let after = matches[0].0;
-        self.view.set_cursor(after);
-        record(&mut self.undo, &mut self.redo, transaction, before, after);
+        self.tabs[self.active].view.set_cursor(after);
+        self.record_active(transaction, before, after);
         self.focus = Focus::Editor;
         self.prompt.matches.clear();
         self.prompt.current = None;
@@ -190,10 +190,10 @@ impl Editor {
             self.message = Some("invalid line number".to_owned());
             return;
         }
-        let index = self.view.buffer_id().index();
+        let index = self.tabs[self.active].view.buffer_id().index();
         let line = (number - 1).min(self.buffers[index].len_lines().saturating_sub(1));
         let at = self.buffers[index].line_start(line);
-        self.view.set_cursor(at);
+        self.tabs[self.active].view.set_cursor(at);
         self.focus = Focus::Editor;
         self.message = None;
     }
