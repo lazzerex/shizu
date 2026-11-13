@@ -10,6 +10,8 @@ use crate::syntax::HighlightSpan;
 use crate::theme::Theme;
 use crate::view::{display_col, gutter_width, layout_line};
 
+mod sidebar;
+
 const WELCOME_LINES: &[&str] = &[
     "        .-~~~-.",
     "  .-~~'         `~~-.",
@@ -27,17 +29,38 @@ const WELCOME_BRANCH_LINES: usize = 5;
 
 pub fn draw(frame: &mut Frame, editor: &Editor) {
     let area = frame.area();
+    let sidebar = editor.sidebar_width();
+    let bars = editor.tab_bar_height();
     let gutter = gutter_width(editor.buffer());
-    let text_height = area.height.saturating_sub(1);
-    let text_width = area.width.saturating_sub(gutter);
+    let content_height = area.height.saturating_sub(1);
+    let text_height = content_height.saturating_sub(bars);
+    let text_width = area.width.saturating_sub(sidebar).saturating_sub(gutter);
+    let content = Rect {
+        x: area.x.saturating_add(sidebar),
+        y: area.y.saturating_add(bars),
+        width: area.width.saturating_sub(sidebar),
+        height: text_height,
+    };
     let buffer = frame.buffer_mut();
     buffer.set_style(area, editor.theme().background_style());
-    if editor.welcome_visible() {
-        draw_welcome(buffer, editor, area, gutter, text_width, text_height);
-    } else {
-        draw_text(buffer, editor, area, gutter, text_width, text_height);
+    if sidebar > 0 {
+        let tree_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: sidebar,
+            height: content_height,
+        };
+        sidebar::draw_tree(buffer, editor, tree_area);
     }
-    draw_petals(buffer, editor, area, gutter, text_width, text_height);
+    if bars > 0 {
+        sidebar::draw_tabs(buffer, editor, area, sidebar);
+    }
+    if editor.welcome_visible() {
+        draw_welcome(buffer, editor, content, gutter, text_width, text_height);
+    } else {
+        draw_text(buffer, editor, content, gutter, text_width, text_height);
+    }
+    draw_petals(buffer, editor, content, gutter, text_width, text_height);
     draw_status(buffer, editor, area);
 }
 
@@ -319,6 +342,8 @@ fn draw_status(target: &mut TuiBuffer, editor: &Editor, area: Rect) {
         prompt_text(&info)
     } else if editor.pending_quit() {
         " Unsaved changes. Press Ctrl+Q again to quit, Esc to cancel ".to_owned()
+    } else if editor.pending_close() {
+        " Unsaved changes. Press Ctrl+W again to close, Esc to cancel ".to_owned()
     } else {
         let buffer = editor.buffer();
         let view = editor.view();
@@ -359,7 +384,7 @@ fn prompt_text(info: &PromptInfo<'_>) -> String {
             )
         }
         Focus::GoToLine => format!(" Go to line: {} ", info.goto),
-        Focus::Editor => String::new(),
+        Focus::Tree | Focus::Editor => String::new(),
     }
 }
 
@@ -824,6 +849,49 @@ mod tests {
         let text: String = (0..11).map(|y| row(&terminal, y, 60)).collect();
         assert!(!text.contains("Ctrl+S save"));
         assert_eq!(symbol(&terminal, 2, 0), "a");
+    }
+
+    fn editor_with_files() -> (TempDir, Editor) {
+        let dir = TempDir::new();
+        fs::write(dir.join("a.txt"), "alpha\n").expect("write a");
+        fs::write(dir.join("b.txt"), "beta\n").expect("write b");
+        let mut editor = Editor::new(Buffer::open(dir.join("a.txt")).expect("open a"));
+        editor.resize(60, 8);
+        (dir, editor)
+    }
+
+    #[test]
+    fn single_tab_renders_no_tab_bar() {
+        let (_dir, mut editor) = editor_with_files();
+        editor.resize(60, 8);
+        let terminal = render(&editor, 60, 8);
+
+        assert_eq!(row(&terminal, 0, 6), "1 alph");
+    }
+
+    #[test]
+    fn tab_bar_lists_open_buffers_and_marks_the_active_tab() {
+        let (dir, mut editor) = editor_with_files();
+        editor.open_path(dir.join("b.txt"));
+
+        let terminal = render(&editor, 60, 8);
+
+        let tabs = row(&terminal, 0, 60);
+        assert!(tabs.contains("a.txt"));
+        assert!(tabs.contains("b.txt"));
+        assert_eq!(row(&terminal, 1, 6), "1 beta");
+    }
+
+    #[test]
+    fn sidebar_renders_entries_and_shifts_the_text_area() {
+        let (_dir, mut editor) = editor_with_files();
+        editor.apply(Command::ToggleSidebar);
+
+        let terminal = render(&editor, 60, 8);
+
+        assert!(row(&terminal, 0, 16).contains("a.txt"));
+        assert!(row(&terminal, 1, 16).contains("b.txt"));
+        assert_eq!(symbol(&terminal, 18, 0), "a");
     }
 
     #[test]
