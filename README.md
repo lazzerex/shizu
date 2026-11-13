@@ -2,7 +2,7 @@
 
 shizu is a text editor that runs in a terminal. It keeps nano's modeless editing but uses tree-sitter for syntax highlighting, and unlike Helix you never switch modes to select, search, or save. I built it because I wanted the highlighting of a modal editor with the keybindings I already know, plus a theme that isn't an afterthought. It's for people who work over SSH and want a capable editor without a plugin setup.
 
-Status: pre-1.0. Editing, saving, search, undo, syntax highlighting, themes, and animation work on Linux; the Windows and macOS code paths are written but untested.
+Status: pre-1.0. Editing, saving, search, undo, syntax highlighting, themes, animation, a file tree sidebar, and tabs work on Linux; the Windows and macOS code paths are written but untested.
 
 ## Why shizu
 
@@ -40,6 +40,8 @@ Starting without a path opens an empty buffer.
 - Incremental find, replace, replace-all, and go to line.
 - Two themes, `sakura` and `sakura-light`, with truecolor and 256-color palettes and a plain style for `NO_COLOR`.
 - A cherry-blossom welcome screen and optional drifting petals that never cover text.
+- A gitignore-aware file tree sidebar with keyboard and mouse navigation.
+- Multiple buffers with tabs that reuse an already-open file.
 - Mouse click, drag, and wheel.
 - Optional config for theme, tab width, and animation.
 
@@ -60,10 +62,15 @@ It also preserves LF/CRLF and the final newline, saves through a temporary file 
 | Ctrl+F | Find |
 | Ctrl+R | Replace |
 | Ctrl+G | Go to line |
+| Ctrl+B | Show or hide the file tree |
+| Ctrl+W | Close the current tab, with confirmation when dirty |
+| Ctrl+PageDown, Ctrl+PageUp | Next tab, previous tab |
 | F3, Shift+F3 | Next match, previous match |
 | Esc | Close the prompt or cancel |
 
-In the find prompt, Enter goes to the next match and Ctrl+P goes to the previous one. In the replace prompt, Tab switches between the find and replace fields, and Ctrl+A replaces all matches. Mouse click, drag, and wheel work in the editor area.
+In the find prompt, Enter goes to the next match and Ctrl+P goes to the previous one. In the replace prompt, Tab switches between the find and replace fields, and Ctrl+A replaces all matches.
+
+The file tree opens at the current buffer's directory. Use the arrow keys to move, Right to expand a directory, Left to collapse it, and Enter to open a file. Clicking a row also opens it. The tab bar appears once more than one buffer is open, and clicking a tab switches to it; opening a file that is already open selects its existing tab.
 
 ## Configuration
 
@@ -114,7 +121,8 @@ src/
   anim.rs          welcome screen petals, idle timer, glyph fallback
   theme.rs         palettes, color depth, contrast, styles
   config.rs        optional TOML config
-  ui.rs            frame rendering
+  tree.rs          gitignore-aware file tree state
+  ui/              frame, status bar, sidebar, and tab rendering
 ```
 
 ## Testing
@@ -125,7 +133,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-There are 195 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, and animation. The terminal itself is exercised with a pty harness on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
+There are 224 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, animation, tabs, and the file tree. The terminal itself is exercised with a pty harness on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
 
 ## Non-goals
 
@@ -143,4 +151,4 @@ A new buffer with no path can't be saved yet; save reports that there is no path
 
 Windows and macOS key handling, mouse behavior, and clipboard integration are untested on those systems.
 
-There's no file tree, tabs, panes, command palette, embedded terminal, or language server support yet.
+Split panes are not implemented yet. There's no command palette, embedded terminal, or language server support yet.
