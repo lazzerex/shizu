@@ -33,6 +33,10 @@ impl View {
         self.buffer_id
     }
 
+    pub fn set_buffer_id(&mut self, buffer_id: BufferId) {
+        self.buffer_id = buffer_id;
+    }
+
     pub fn cursor(&self) -> CharIdx {
         self.cursor
     }
