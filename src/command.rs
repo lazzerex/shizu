@@ -36,4 +36,13 @@ pub enum Command {
     Click { column: u16, row: u16 },
     Drag { column: u16, row: u16 },
     ScrollLines(isize),
+    ToggleSidebar,
+    CloseTab,
+    NextTab,
+    PreviousTab,
+    TreeUp,
+    TreeDown,
+    TreeLeft,
+    TreeRight,
+    TreeOpen,
 }
