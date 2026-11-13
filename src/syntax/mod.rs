@@ -18,6 +18,7 @@ pub struct HighlightSpan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct CacheKey {
+    identity: u64,
     revision: u64,
     parse_first: usize,
     parse_count: usize,
@@ -56,6 +57,7 @@ impl SyntaxHighlighter {
         let parse_end = window_end.min(total);
         let parse_count = parse_end.saturating_sub(parse_first);
         let key = CacheKey {
+            identity: buffer.identity(),
             revision: buffer.revision(),
             parse_first,
             parse_count,
