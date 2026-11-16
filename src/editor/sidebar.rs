@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{Editor, Focus};
 use crate::tree::FileTree;
@@ -23,15 +23,22 @@ impl Editor {
         self.tree.as_ref()
     }
 
+    pub(super) fn file_root(&self) -> Option<PathBuf> {
+        self.tree
+            .as_ref()
+            .map(|tree| tree.root().to_path_buf())
+            .or_else(|| {
+                self.buffer()
+                    .path()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+            })
+            .or_else(|| std::env::current_dir().ok())
+    }
+
     pub(super) fn toggle_sidebar(&mut self) {
         if self.tree.is_none() {
-            let root = self
-                .buffer()
-                .path()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf)
-                .or_else(|| std::env::current_dir().ok());
-            let Some(root) = root else {
+            let Some(root) = self.file_root() else {
                 self.message = Some("cannot determine working directory".to_owned());
                 return;
             };
