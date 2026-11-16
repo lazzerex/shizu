@@ -42,6 +42,7 @@ Starting without a path opens an empty buffer.
 - A cherry-blossom welcome screen and optional drifting petals that never cover text.
 - A gitignore-aware file tree sidebar with keyboard and mouse navigation.
 - Multiple buffers with tabs that reuse an already-open file.
+- A fuzzy command palette over files and commands, with context hints in the status bar.
 - Mouse click, drag, and wheel.
 - Optional config for theme, tab width, and animation.
 
@@ -62,6 +63,7 @@ It also preserves LF/CRLF and the final newline, saves through a temporary file 
 | Ctrl+F | Find |
 | Ctrl+R | Replace |
 | Ctrl+G | Go to line |
+| Ctrl+P | Open the command palette |
 | Ctrl+B | Show or hide the file tree |
 | Ctrl+W | Close the current tab, with confirmation when dirty |
 | Ctrl+PageDown, Ctrl+PageUp | Next tab, previous tab |
@@ -71,6 +73,8 @@ It also preserves LF/CRLF and the final newline, saves through a temporary file 
 In the find prompt, Enter goes to the next match and Ctrl+P goes to the previous one. In the replace prompt, Tab switches between the find and replace fields, and Ctrl+A replaces all matches.
 
 The file tree opens at the current buffer's directory. Use the arrow keys to move, Right to expand a directory, Left to collapse it, and Enter to open a file. Clicking a row also opens it. The tab bar appears once more than one buffer is open, and clicking a tab switches to it; opening a file that is already open selects its existing tab.
+
+The command palette opens at the buffer's directory. Type to fuzzy-match files, prefix the query with `>` to search commands instead, and press Enter to run the selected entry. Ctrl+P, Ctrl+S, Ctrl+F, Ctrl+B, and Ctrl+Q are shown in the status bar for the current focus.
 
 ## Configuration
 
@@ -122,7 +126,8 @@ src/
   theme.rs         palettes, color depth, contrast, styles
   config.rs        optional TOML config
   tree.rs          gitignore-aware file tree state
-  ui/              frame, status bar, sidebar, and tab rendering
+  palette.rs       fuzzy palette state and file listing
+  ui/              frame, status bar, sidebar, palette, and tab rendering
 ```
 
 ## Testing
@@ -133,7 +138,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-There are 224 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, animation, tabs, and the file tree. The terminal itself is exercised with a pty harness on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
+There are 245 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, animation, tabs, the file tree, and the command palette. The terminal itself is exercised with a pty harness on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
 
 ## Non-goals
 
@@ -151,4 +156,4 @@ A new buffer with no path can't be saved yet; save reports that there is no path
 
 Windows and macOS key handling, mouse behavior, and clipboard integration are untested on those systems.
 
-Split panes are not implemented yet. There's no command palette, embedded terminal, or language server support yet.
+Split panes are not implemented yet. There's no embedded terminal or language server support yet.
