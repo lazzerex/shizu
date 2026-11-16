@@ -5,6 +5,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::{Buffer, BufferId, CharIdx, LineCol};
 
+pub(crate) const DEFAULT_TAB_WIDTH: usize = 4;
+
 #[derive(Debug)]
 pub struct View {
     buffer_id: BufferId,
@@ -25,7 +27,7 @@ impl View {
             scroll_line: 0,
             scroll_col: 0,
             goal_col: None,
-            tab_width: 4,
+            tab_width: DEFAULT_TAB_WIDTH,
         }
     }
 
