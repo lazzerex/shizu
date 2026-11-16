@@ -40,9 +40,9 @@ mod tests {
 
     #[test]
     fn no_matches_is_empty() {
-        assert!(find_all("abc", "xyz").is_empty());
-        assert!(find_all("abc", "").is_empty());
-        assert!(find_all("", "abc").is_empty());
+        assert_eq!(find_all("abc", "xyz"), []);
+        assert_eq!(find_all("abc", ""), []);
+        assert_eq!(find_all("", "abc"), []);
     }
 
     #[test]
