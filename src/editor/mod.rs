@@ -3,6 +3,7 @@ use std::time::Instant;
 use crate::anim::{Bloom, Idle, Mode};
 use crate::buffer::{Buffer, BufferId, CharIdx, Transaction};
 use crate::command::Command;
+use crate::palette::Palette;
 use crate::syntax::{HighlightSpan, SyntaxHighlighter};
 use crate::theme::{ColorDepth, Theme};
 use crate::tree::FileTree;
@@ -11,6 +12,7 @@ use crate::view::{DEFAULT_TAB_WIDTH, View, gutter_width};
 mod animation;
 mod editing;
 mod movement;
+mod palette;
 mod prompt;
 mod sidebar;
 mod tabs;
@@ -24,6 +26,7 @@ pub enum Focus {
     Find,
     Replace,
     GoToLine,
+    Palette,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +82,7 @@ pub struct Editor {
     pending_clipboard: Option<String>,
     focus: Focus,
     prompt: Prompt,
+    palette: Palette,
     theme: Theme,
     syntax: SyntaxHighlighter,
     mode: Mode,
@@ -118,6 +122,7 @@ impl Editor {
             pending_clipboard: None,
             focus: Focus::Editor,
             prompt: Prompt::default(),
+            palette: Palette::default(),
             theme: Theme::sakura(ColorDepth::TrueColor),
             syntax: SyntaxHighlighter::new(),
             mode: Mode::Idle,
@@ -159,6 +164,10 @@ impl Editor {
             goto: &self.prompt.goto,
             field: self.prompt.field,
         })
+    }
+
+    pub(crate) fn palette(&self) -> Option<&Palette> {
+        (self.focus == Focus::Palette).then_some(&self.palette)
     }
 
     pub fn should_quit(&self) -> bool {
@@ -286,6 +295,12 @@ impl Editor {
             Command::TreeLeft => self.tree_left(),
             Command::TreeRight => self.tree_right(),
             Command::TreeOpen => self.tree_open(),
+            Command::OpenPalette => self.open_palette(),
+            Command::PaletteUp => self.palette_up(),
+            Command::PaletteDown => self.palette_down(),
+            Command::PaletteInsert(character) => self.palette_insert(character),
+            Command::PaletteBackspace => self.palette_backspace(),
+            Command::PaletteAccept => self.palette_accept(),
         }
         if self.buffer().revision() != revision {
             self.prompt.matches.clear();
@@ -314,6 +329,9 @@ impl Editor {
             goto: self.prompt.goto.clone(),
             field: self.prompt.field,
             current: self.prompt.current,
+            palette_query: self.palette.query().to_owned(),
+            palette_selected: self.palette.selected(),
+            palette_matches: self.palette.match_count(),
             tab_count: self.tabs.len(),
             active_tab: self.active,
             tree: self
@@ -368,6 +386,9 @@ struct State {
     goto: String,
     field: PromptField,
     current: Option<usize>,
+    palette_query: String,
+    palette_selected: usize,
+    palette_matches: usize,
     tab_count: usize,
     active_tab: usize,
     tree: Option<(u64, bool)>,
