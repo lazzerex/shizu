@@ -6,6 +6,7 @@ pub mod config;
 pub mod editor;
 pub mod event;
 pub mod keymap;
+mod palette;
 pub mod search;
 pub mod syntax;
 pub mod theme;
