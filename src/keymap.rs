@@ -116,6 +116,11 @@ const TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
         KeyModifiers::CONTROL,
         Command::OpenGoToLine,
     ),
+    (
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+        Command::OpenPalette,
+    ),
     (KeyCode::F(3), KeyModifiers::NONE, Command::FindNext),
     (KeyCode::F(3), KeyModifiers::SHIFT, Command::FindPrevious),
     (
@@ -128,78 +133,256 @@ const TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
     (KeyCode::PageUp, KeyModifiers::CONTROL, Command::PreviousTab),
 ];
 
+const TREE_TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
+    (KeyCode::Up, KeyModifiers::NONE, Command::TreeUp),
+    (KeyCode::Down, KeyModifiers::NONE, Command::TreeDown),
+    (KeyCode::Left, KeyModifiers::NONE, Command::TreeLeft),
+    (KeyCode::Right, KeyModifiers::NONE, Command::TreeRight),
+    (KeyCode::Enter, KeyModifiers::NONE, Command::TreeOpen),
+    (KeyCode::Esc, KeyModifiers::NONE, Command::Cancel),
+    (
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+        Command::OpenPalette,
+    ),
+    (
+        KeyCode::Char('b'),
+        KeyModifiers::CONTROL,
+        Command::ToggleSidebar,
+    ),
+    (KeyCode::Char('w'), KeyModifiers::CONTROL, Command::CloseTab),
+    (KeyCode::Char('s'), KeyModifiers::CONTROL, Command::Save),
+    (KeyCode::Char('q'), KeyModifiers::CONTROL, Command::Quit),
+    (KeyCode::PageDown, KeyModifiers::CONTROL, Command::NextTab),
+    (KeyCode::PageUp, KeyModifiers::CONTROL, Command::PreviousTab),
+];
+
+const FIND_TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
+    (KeyCode::Esc, KeyModifiers::NONE, Command::Cancel),
+    (KeyCode::Enter, KeyModifiers::NONE, Command::PromptNext),
+    (
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+        Command::PromptBackspace,
+    ),
+    (
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+        Command::PromptPrevious,
+    ),
+    (KeyCode::F(3), KeyModifiers::NONE, Command::FindNext),
+    (KeyCode::F(3), KeyModifiers::SHIFT, Command::FindPrevious),
+];
+
+const REPLACE_TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
+    (KeyCode::Esc, KeyModifiers::NONE, Command::Cancel),
+    (KeyCode::Enter, KeyModifiers::NONE, Command::PromptNext),
+    (KeyCode::Tab, KeyModifiers::NONE, Command::PromptToggleField),
+    (
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+        Command::PromptBackspace,
+    ),
+    (
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+        Command::PromptPrevious,
+    ),
+    (
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+        Command::ReplaceAll,
+    ),
+];
+
+const GOTO_TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
+    (KeyCode::Esc, KeyModifiers::NONE, Command::Cancel),
+    (KeyCode::Enter, KeyModifiers::NONE, Command::PromptNext),
+    (
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+        Command::PromptBackspace,
+    ),
+];
+
+const PALETTE_TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
+    (KeyCode::Up, KeyModifiers::NONE, Command::PaletteUp),
+    (KeyCode::Down, KeyModifiers::NONE, Command::PaletteDown),
+    (KeyCode::Enter, KeyModifiers::NONE, Command::PaletteAccept),
+    (KeyCode::Esc, KeyModifiers::NONE, Command::Cancel),
+];
+
+#[derive(Debug)]
+pub(crate) struct CommandEntry {
+    pub(crate) command: Command,
+    pub(crate) label: &'static str,
+    pub(crate) keys: Option<String>,
+}
+
+struct HintSpec {
+    command: Command,
+    label: &'static str,
+}
+
+const EDITOR_HINTS: &[HintSpec] = &[
+    HintSpec {
+        command: Command::OpenPalette,
+        label: "Palette",
+    },
+    HintSpec {
+        command: Command::Save,
+        label: "Save",
+    },
+    HintSpec {
+        command: Command::OpenFind,
+        label: "Find",
+    },
+    HintSpec {
+        command: Command::ToggleSidebar,
+        label: "Sidebar",
+    },
+    HintSpec {
+        command: Command::Quit,
+        label: "Quit",
+    },
+];
+
+const TREE_HINTS: &[HintSpec] = &[
+    HintSpec {
+        command: Command::OpenPalette,
+        label: "Palette",
+    },
+    HintSpec {
+        command: Command::TreeOpen,
+        label: "Open",
+    },
+    HintSpec {
+        command: Command::TreeRight,
+        label: "Expand",
+    },
+    HintSpec {
+        command: Command::TreeLeft,
+        label: "Collapse",
+    },
+    HintSpec {
+        command: Command::ToggleSidebar,
+        label: "Close",
+    },
+    HintSpec {
+        command: Command::Quit,
+        label: "Quit",
+    },
+];
+
+const FIND_HINTS: &[HintSpec] = &[
+    HintSpec {
+        command: Command::FindNext,
+        label: "Next",
+    },
+    HintSpec {
+        command: Command::FindPrevious,
+        label: "Previous",
+    },
+    HintSpec {
+        command: Command::Cancel,
+        label: "Close",
+    },
+];
+
+const REPLACE_HINTS: &[HintSpec] = &[
+    HintSpec {
+        command: Command::PromptNext,
+        label: "Next",
+    },
+    HintSpec {
+        command: Command::PromptToggleField,
+        label: "Field",
+    },
+    HintSpec {
+        command: Command::ReplaceAll,
+        label: "All",
+    },
+    HintSpec {
+        command: Command::Cancel,
+        label: "Close",
+    },
+];
+
+const GOTO_HINTS: &[HintSpec] = &[
+    HintSpec {
+        command: Command::PromptNext,
+        label: "Go",
+    },
+    HintSpec {
+        command: Command::Cancel,
+        label: "Close",
+    },
+];
+
+const PALETTE_HINTS: &[HintSpec] = &[
+    HintSpec {
+        command: Command::PaletteAccept,
+        label: "Open",
+    },
+    HintSpec {
+        command: Command::PaletteUp,
+        label: "Up",
+    },
+    HintSpec {
+        command: Command::PaletteDown,
+        label: "Down",
+    },
+    HintSpec {
+        command: Command::Cancel,
+        label: "Close",
+    },
+];
+
 pub fn resolve(key: &KeyEvent, focus: Focus) -> Option<Command> {
     if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return None;
     }
     match focus {
         Focus::Editor => resolve_editor(key),
-        Focus::Tree => resolve_tree(key),
+        Focus::Tree => resolve_table(key, TREE_TABLE),
         Focus::Find => resolve_find(key),
         Focus::Replace => resolve_replace(key),
         Focus::GoToLine => resolve_goto(key),
+        Focus::Palette => resolve_palette(key),
     }
 }
 
 fn resolve_editor(key: &KeyEvent) -> Option<Command> {
-    if let Some((_, _, command)) = TABLE
-        .iter()
-        .find(|(code, modifiers, _)| *code == key.code && *modifiers == key.modifiers)
-    {
-        return Some(*command);
-    }
-    prompt_character(key).map(Command::Insert)
-}
-
-fn resolve_tree(key: &KeyEvent) -> Option<Command> {
-    match (key.code, key.modifiers) {
-        (KeyCode::Up, KeyModifiers::NONE) => Some(Command::TreeUp),
-        (KeyCode::Down, KeyModifiers::NONE) => Some(Command::TreeDown),
-        (KeyCode::Left, KeyModifiers::NONE) => Some(Command::TreeLeft),
-        (KeyCode::Right, KeyModifiers::NONE) => Some(Command::TreeRight),
-        (KeyCode::Enter, KeyModifiers::NONE) => Some(Command::TreeOpen),
-        (KeyCode::Esc, KeyModifiers::NONE) => Some(Command::Cancel),
-        (KeyCode::Char('b'), KeyModifiers::CONTROL) => Some(Command::ToggleSidebar),
-        (KeyCode::Char('w'), KeyModifiers::CONTROL) => Some(Command::CloseTab),
-        (KeyCode::Char('s'), KeyModifiers::CONTROL) => Some(Command::Save),
-        (KeyCode::Char('q'), KeyModifiers::CONTROL) => Some(Command::Quit),
-        (KeyCode::PageDown, KeyModifiers::CONTROL) => Some(Command::NextTab),
-        (KeyCode::PageUp, KeyModifiers::CONTROL) => Some(Command::PreviousTab),
-        _ => None,
-    }
+    resolve_table(key, TABLE).or_else(|| prompt_character(key).map(Command::Insert))
 }
 
 fn resolve_find(key: &KeyEvent) -> Option<Command> {
-    match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => Some(Command::Cancel),
-        (KeyCode::Enter, KeyModifiers::NONE) => Some(Command::PromptNext),
-        (KeyCode::Backspace, KeyModifiers::NONE) => Some(Command::PromptBackspace),
-        (KeyCode::Char('p'), KeyModifiers::CONTROL) => Some(Command::PromptPrevious),
-        (KeyCode::F(3), KeyModifiers::NONE) => Some(Command::FindNext),
-        (KeyCode::F(3), KeyModifiers::SHIFT) => Some(Command::FindPrevious),
-        _ => prompt_character(key).map(Command::PromptInsert),
-    }
+    resolve_table(key, FIND_TABLE).or_else(|| prompt_character(key).map(Command::PromptInsert))
 }
 
 fn resolve_replace(key: &KeyEvent) -> Option<Command> {
-    match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => Some(Command::Cancel),
-        (KeyCode::Enter, KeyModifiers::NONE) => Some(Command::PromptNext),
-        (KeyCode::Tab, KeyModifiers::NONE) => Some(Command::PromptToggleField),
-        (KeyCode::Backspace, KeyModifiers::NONE) => Some(Command::PromptBackspace),
-        (KeyCode::Char('p'), KeyModifiers::CONTROL) => Some(Command::PromptPrevious),
-        (KeyCode::Char('a'), KeyModifiers::CONTROL) => Some(Command::ReplaceAll),
-        _ => prompt_character(key).map(Command::PromptInsert),
-    }
+    resolve_table(key, REPLACE_TABLE).or_else(|| prompt_character(key).map(Command::PromptInsert))
 }
 
 fn resolve_goto(key: &KeyEvent) -> Option<Command> {
-    match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => Some(Command::Cancel),
-        (KeyCode::Enter, KeyModifiers::NONE) => Some(Command::PromptNext),
-        (KeyCode::Backspace, KeyModifiers::NONE) => Some(Command::PromptBackspace),
-        _ => prompt_character(key).map(Command::PromptInsert),
+    resolve_table(key, GOTO_TABLE).or_else(|| prompt_character(key).map(Command::PromptInsert))
+}
+
+fn resolve_palette(key: &KeyEvent) -> Option<Command> {
+    if let Some(command) = resolve_table(key, PALETTE_TABLE) {
+        return Some(command);
     }
+    match key.code {
+        KeyCode::Backspace => Some(Command::PaletteBackspace),
+        _ => prompt_character(key).map(Command::PaletteInsert),
+    }
+}
+
+fn resolve_table(key: &KeyEvent, table: &[(KeyCode, KeyModifiers, Command)]) -> Option<Command> {
+    table
+        .iter()
+        .find(|(code, modifiers, _)| *code == key.code && *modifiers == key.modifiers)
+        .map(|(_, _, command)| *command)
 }
 
 fn prompt_character(key: &KeyEvent) -> Option<char> {
@@ -213,6 +396,99 @@ fn prompt_character(key: &KeyEvent) -> Option<char> {
         }
         _ => None,
     }
+}
+
+pub(crate) fn command_entries() -> Vec<CommandEntry> {
+    let mut entries: Vec<CommandEntry> = Vec::new();
+    for (code, modifiers, command) in TABLE {
+        let Some(label) = command.description() else {
+            continue;
+        };
+        if entries.iter().any(|entry| entry.command == *command) {
+            continue;
+        }
+        entries.push(CommandEntry {
+            command: *command,
+            label,
+            keys: Some(key_label(*code, *modifiers)),
+        });
+    }
+    entries
+}
+
+pub fn hint_text(focus: Focus) -> String {
+    let table = table(focus);
+    hint_specs(focus)
+        .iter()
+        .filter_map(|spec| {
+            let (code, modifiers, _) = table
+                .iter()
+                .find(|(_, _, command)| *command == spec.command)?;
+            Some(format!("{} {}", key_label(*code, *modifiers), spec.label))
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn table(focus: Focus) -> &'static [(KeyCode, KeyModifiers, Command)] {
+    match focus {
+        Focus::Editor => TABLE,
+        Focus::Tree => TREE_TABLE,
+        Focus::Find => FIND_TABLE,
+        Focus::Replace => REPLACE_TABLE,
+        Focus::GoToLine => GOTO_TABLE,
+        Focus::Palette => PALETTE_TABLE,
+    }
+}
+
+fn hint_specs(focus: Focus) -> &'static [HintSpec] {
+    match focus {
+        Focus::Editor => EDITOR_HINTS,
+        Focus::Tree => TREE_HINTS,
+        Focus::Find => FIND_HINTS,
+        Focus::Replace => REPLACE_HINTS,
+        Focus::GoToLine => GOTO_HINTS,
+        Focus::Palette => PALETTE_HINTS,
+    }
+}
+
+fn key_label(code: KeyCode, modifiers: KeyModifiers) -> String {
+    let mut label = String::new();
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        label.push_str("Ctrl+");
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        label.push_str("Alt+");
+    }
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        label.push_str("Shift+");
+    }
+    let name = match code {
+        KeyCode::Char(character) => {
+            if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                character.to_ascii_uppercase().to_string()
+            } else {
+                character.to_string()
+            }
+        }
+        KeyCode::Enter => "Enter".to_owned(),
+        KeyCode::Esc => "Esc".to_owned(),
+        KeyCode::Tab => "Tab".to_owned(),
+        KeyCode::Backspace => "Backspace".to_owned(),
+        KeyCode::Delete => "Delete".to_owned(),
+        KeyCode::Up => "Up".to_owned(),
+        KeyCode::Down => "Down".to_owned(),
+        KeyCode::Left => "Left".to_owned(),
+        KeyCode::Right => "Right".to_owned(),
+        KeyCode::Home => "Home".to_owned(),
+        KeyCode::End => "End".to_owned(),
+        KeyCode::PageUp => "PageUp".to_owned(),
+        KeyCode::PageDown => "PageDown".to_owned(),
+        KeyCode::F(number) => format!("F{number}"),
+        _ => "Key".to_owned(),
+    };
+    label.push_str(&name);
+    label
 }
 
 pub fn resolve_mouse(mouse: &MouseEvent) -> Option<Command> {
@@ -636,6 +912,87 @@ mod tests {
     }
 
     #[test]
+    fn editor_focus_opens_the_palette() {
+        assert_eq!(
+            resolve_editor(&key(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+            Some(Command::OpenPalette)
+        );
+    }
+
+    #[test]
+    fn palette_focus_routes_filtering_and_navigation() {
+        assert_eq!(
+            resolve(&key(KeyCode::Char('m'), KeyModifiers::NONE), Focus::Palette),
+            Some(Command::PaletteInsert('m'))
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Backspace, KeyModifiers::NONE), Focus::Palette),
+            Some(Command::PaletteBackspace)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Up, KeyModifiers::NONE), Focus::Palette),
+            Some(Command::PaletteUp)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Down, KeyModifiers::NONE), Focus::Palette),
+            Some(Command::PaletteDown)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Enter, KeyModifiers::NONE), Focus::Palette),
+            Some(Command::PaletteAccept)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Esc, KeyModifiers::NONE), Focus::Palette),
+            Some(Command::Cancel)
+        );
+    }
+
+    #[test]
+    fn palette_focus_ignores_control_letters() {
+        assert_eq!(
+            resolve(
+                &key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+                Focus::Palette
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn command_entries_come_from_the_editor_table_without_duplicates() {
+        let entries = super::command_entries();
+        let save = entries
+            .iter()
+            .find(|entry| entry.command == Command::Save)
+            .expect("save entry");
+        assert_eq!(save.label, "Save");
+        assert_eq!(save.keys.as_deref(), Some("Ctrl+S"));
+
+        let moves = entries
+            .iter()
+            .filter(|entry| entry.command == Command::MoveLeft { select: false })
+            .count();
+        assert_eq!(moves, 1);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.command.description().is_some())
+        );
+    }
+
+    #[test]
+    fn hint_text_uses_the_current_focus_table() {
+        let editor_hints = super::hint_text(Focus::Editor);
+        assert!(editor_hints.contains("Ctrl+P Palette"));
+        assert!(editor_hints.contains("Ctrl+S Save"));
+
+        let palette_hints = super::hint_text(Focus::Palette);
+        assert!(palette_hints.contains("Enter Open"));
+        assert!(palette_hints.contains("Esc Close"));
+        assert!(!palette_hints.contains("Ctrl+S"));
+    }
+
+    #[test]
     fn tree_focus_navigates_and_can_leave() {
         assert_eq!(
             resolve(&key(KeyCode::Up, KeyModifiers::NONE), Focus::Tree),
@@ -664,6 +1021,10 @@ mod tests {
         assert_eq!(
             resolve(&key(KeyCode::Char('b'), KeyModifiers::CONTROL), Focus::Tree),
             Some(Command::ToggleSidebar)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('p'), KeyModifiers::CONTROL), Focus::Tree),
+            Some(Command::OpenPalette)
         );
     }
 }
