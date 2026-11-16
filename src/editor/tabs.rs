@@ -14,9 +14,11 @@ pub(super) struct Tab {
 }
 
 impl Tab {
-    pub(super) fn new(buffer_id: BufferId) -> Self {
+    pub(super) fn new(buffer_id: BufferId, tab_width: usize) -> Self {
+        let mut view = View::new(buffer_id);
+        view.set_tab_width(tab_width);
         Self {
-            view: View::new(buffer_id),
+            view,
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -36,8 +38,9 @@ impl Editor {
         match Buffer::open(path) {
             Ok(buffer) => {
                 let id = BufferId::new(self.buffers.len());
+                let tab_width = self.tabs[self.active].view.tab_width();
                 self.buffers.push(buffer);
-                self.tabs.push(Tab::new(id));
+                self.tabs.push(Tab::new(id, tab_width));
                 self.message = None;
                 self.select_tab(self.tabs.len() - 1)
             }
@@ -143,10 +146,11 @@ impl Editor {
         self.pending_close = false;
         self.message = None;
         if self.tabs.len() == 1 {
+            let tab_width = self.tabs[self.active].view.tab_width();
             self.buffers.clear();
             self.buffers.push(Buffer::new());
             self.tabs.clear();
-            self.tabs.push(Tab::new(BufferId::new(0)));
+            self.tabs.push(Tab::new(BufferId::new(0), tab_width));
             self.active = 0;
         } else {
             let removed = self.tabs[self.active].view.buffer_id().index();
@@ -208,6 +212,30 @@ mod tests {
         assert!(editor.open_path(&first));
         assert_eq!(editor.tab_count(), 2);
         assert_eq!(editor.buffer().path(), Some(first.as_path()));
+    }
+
+    #[test]
+    fn opened_tab_inherits_configured_tab_width() {
+        let dir = TempDir::new();
+        let mut editor = editor_with(&dir, "first.txt", "one\n");
+        let second = dir.join("second.txt");
+        fs::write(&second, "two\n").unwrap();
+
+        editor.set_tab_width(2);
+        editor.open_path(&second);
+
+        assert_eq!(editor.view().tab_width(), 2);
+    }
+
+    #[test]
+    fn closing_the_last_tab_keeps_configured_tab_width() {
+        let dir = TempDir::new();
+        let mut editor = editor_with(&dir, "first.txt", "one\n");
+
+        editor.set_tab_width(2);
+        editor.apply(Command::CloseTab);
+
+        assert_eq!(editor.view().tab_width(), 2);
     }
 
     #[test]
