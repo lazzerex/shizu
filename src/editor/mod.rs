@@ -6,7 +6,7 @@ use crate::command::Command;
 use crate::syntax::{HighlightSpan, SyntaxHighlighter};
 use crate::theme::{ColorDepth, Theme};
 use crate::tree::FileTree;
-use crate::view::{View, gutter_width};
+use crate::view::{DEFAULT_TAB_WIDTH, View, gutter_width};
 
 mod animation;
 mod editing;
@@ -104,7 +104,7 @@ impl Editor {
     pub fn new(buffer: Buffer) -> Self {
         Self {
             buffers: vec![buffer],
-            tabs: vec![Tab::new(BufferId::new(0))],
+            tabs: vec![Tab::new(BufferId::new(0), DEFAULT_TAB_WIDTH)],
             active: 0,
             viewport: Viewport {
                 width: 80,
@@ -929,7 +929,7 @@ mod tests {
         let mut editor = editor("abc");
         editor.apply(Command::OpenFind);
         type_prompt(&mut editor, "zzz");
-        assert!(editor.matches().is_empty());
+        assert_eq!(editor.matches(), []);
         assert_eq!(editor.focus(), Focus::Find);
         editor.apply(Command::PromptNext);
         assert_eq!(editor.view().cursor(), CharIdx::new(0));
@@ -970,7 +970,7 @@ mod tests {
         editor.apply(Command::Cancel);
         assert_eq!(editor.matches().len(), 1);
         editor.apply(Command::Insert('x'));
-        assert!(editor.matches().is_empty());
+        assert_eq!(editor.matches(), []);
     }
 
     #[test]
