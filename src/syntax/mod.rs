@@ -381,9 +381,9 @@ mod tests {
         let mut highlighter = SyntaxHighlighter::new();
         highlighter.ensure(&buffer, 1500, 20);
 
-        assert!(!highlighter.line(1500).is_empty());
-        assert!(highlighter.line(0).is_empty());
-        assert!(highlighter.line(1999).is_empty());
+        assert_ne!(highlighter.line(1500), []);
+        assert_eq!(highlighter.line(0), []);
+        assert_eq!(highlighter.line(1999), []);
     }
 
     #[test]
@@ -394,7 +394,7 @@ mod tests {
         let mut buffer = Buffer::open(&path).expect("open source");
         let mut highlighter = SyntaxHighlighter::new();
         highlighter.ensure(&buffer, 0, 2);
-        assert!(!highlighter.line(0).is_empty());
+        assert_ne!(highlighter.line(0), []);
 
         buffer.insert(crate::buffer::CharIdx::new(0), "// x\n");
         highlighter.ensure(&buffer, 0, 2);
