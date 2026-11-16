@@ -2,14 +2,17 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer as TuiBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use unicode_width::UnicodeWidthStr;
 
 use crate::anim::{MIN_HEIGHT, MIN_WIDTH};
 use crate::buffer::{Buffer, CharIdx};
 use crate::editor::{Editor, Focus, PromptField, PromptInfo};
+use crate::keymap;
 use crate::syntax::HighlightSpan;
 use crate::theme::Theme;
 use crate::view::{display_col, gutter_width, layout_line};
 
+mod palette;
 mod sidebar;
 
 const WELCOME_LINES: &[&str] = &[
@@ -19,9 +22,9 @@ const WELCOME_LINES: &[&str] = &[
     "  `-.._          _..-'",
     "        `------'",
     "",
-    "Ctrl+S save    Ctrl+Q quit    Ctrl+F find",
-    "Ctrl+R replace    Ctrl+G go to line",
-    "Ctrl+A select all    Alt+Up/Down move line",
+    "Ctrl+P palette    Ctrl+S save    Ctrl+Q quit",
+    "Ctrl+F find    Ctrl+R replace    Ctrl+G go to line",
+    "Ctrl+B sidebar    Ctrl+W close tab    Ctrl+A select all",
     "Open a file: shizu path/to/file",
 ];
 
@@ -61,6 +64,7 @@ pub fn draw(frame: &mut Frame, editor: &Editor) {
         draw_text(buffer, editor, content, gutter, text_width, text_height);
     }
     draw_petals(buffer, editor, content, gutter, text_width, text_height);
+    palette::draw(buffer, editor, area);
     draw_status(buffer, editor, area);
 }
 
@@ -338,7 +342,9 @@ fn draw_status(target: &mut TuiBuffer, editor: &Editor, area: Rect) {
         return;
     }
     let y = area.y.saturating_add(area.height - 1);
-    let text = if let Some(info) = editor.prompt_info() {
+    let text = if let Some(palette) = editor.palette() {
+        format!(" Palette: {} ", palette.query())
+    } else if let Some(info) = editor.prompt_info() {
         prompt_text(&info)
     } else if editor.pending_quit() {
         " Unsaved changes. Press Ctrl+Q again to quit, Esc to cancel ".to_owned()
@@ -360,8 +366,20 @@ fn draw_status(target: &mut TuiBuffer, editor: &Editor, area: Rect) {
         let message = editor.message().unwrap_or_default();
         format!(" {name} {dirty}  {}:{} {message} ", pos.line + 1, col)
     };
-    let padded = format!("{text:<width$}", width = usize::from(area.width));
-    target.set_string(area.x, y, &padded, editor.theme().status_bar());
+    let hints = keymap::hint_text(editor.focus());
+    let line = status_line(&text, &hints, usize::from(area.width));
+    target.set_string(area.x, y, &line, editor.theme().status_bar());
+}
+
+fn status_line(text: &str, hints: &str, width: usize) -> String {
+    let text_width = UnicodeWidthStr::width(text);
+    if hints.is_empty() || text_width >= width {
+        return format!("{text:<width$}");
+    }
+    let hints = truncate(hints, width.saturating_sub(text_width).saturating_sub(1));
+    let hint_width = UnicodeWidthStr::width(hints.as_str());
+    let padding = width.saturating_sub(text_width).saturating_sub(hint_width);
+    format!("{text}{}{hints}", " ".repeat(padding))
 }
 
 fn prompt_text(info: &PromptInfo<'_>) -> String {
@@ -384,8 +402,25 @@ fn prompt_text(info: &PromptInfo<'_>) -> String {
             )
         }
         Focus::GoToLine => format!(" Go to line: {} ", info.goto),
-        Focus::Tree | Focus::Editor => String::new(),
+        Focus::Tree | Focus::Editor | Focus::Palette => String::new(),
     }
+}
+
+pub(super) fn truncate(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_owned();
+    }
+    let mut output = String::new();
+    let mut used = 0;
+    for character in text.chars() {
+        let size = UnicodeWidthStr::width(character.to_string().as_str());
+        if used + size > width {
+            break;
+        }
+        used += size;
+        output.push(character);
+    }
+    output
 }
 
 #[cfg(test)]
@@ -892,6 +927,45 @@ mod tests {
         assert!(row(&terminal, 0, 16).contains("a.txt"));
         assert!(row(&terminal, 1, 16).contains("b.txt"));
         assert_eq!(symbol(&terminal, 18, 0), "a");
+    }
+
+    #[test]
+    fn status_bar_shows_context_hints() {
+        let mut editor = Editor::new(Buffer::from_text("abc"));
+        editor.resize(80, 4);
+        let terminal = render(&editor, 80, 4);
+
+        let status = row(&terminal, 3, 80);
+        assert!(status.contains("[No Name]"));
+        assert!(status.contains("Ctrl+P Palette"));
+        assert!(status.contains("Ctrl+S Save"));
+    }
+
+    #[test]
+    fn palette_overlay_lists_filtered_files() {
+        let (_dir, mut editor) = editor_with_files();
+        editor.apply(Command::OpenPalette);
+        for character in "b.txt".chars() {
+            editor.apply(Command::PaletteInsert(character));
+        }
+        let terminal = render(&editor, 60, 8);
+        let text: String = (0..8).map(|y| row(&terminal, y, 60)).collect();
+
+        assert!(text.contains("Palette: b.txt"), "{text:?}");
+        assert!(text.contains("b.txt"), "{text:?}");
+        assert!(!text.contains("a.txt"), "{text:?}");
+    }
+
+    #[test]
+    fn palette_prompt_uses_palette_hints() {
+        let (_dir, mut editor) = editor_with_files();
+        editor.apply(Command::OpenPalette);
+        let terminal = render(&editor, 80, 8);
+
+        let status = row(&terminal, 7, 80);
+        assert!(status.contains("Palette:"));
+        assert!(status.contains("Enter Open"));
+        assert!(!status.contains("Ctrl+S Save"));
     }
 
     #[test]
