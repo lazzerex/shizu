@@ -16,7 +16,10 @@ impl Editor {
     }
 
     pub fn sidebar_height(&self) -> u16 {
-        self.viewport.height.saturating_sub(1)
+        self.viewport
+            .height
+            .saturating_sub(1)
+            .saturating_sub(self.terminal_height())
     }
 
     pub fn file_tree(&self) -> Option<&FileTree> {
