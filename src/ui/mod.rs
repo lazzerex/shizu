@@ -9,6 +9,7 @@ use crate::buffer::{Buffer, CharIdx};
 use crate::editor::{Editor, Focus, PromptField, PromptInfo};
 use crate::keymap;
 use crate::syntax::HighlightSpan;
+use crate::terminal;
 use crate::theme::Theme;
 use crate::view::{display_col, gutter_width, layout_line};
 
@@ -35,8 +36,10 @@ pub fn draw(frame: &mut Frame, editor: &Editor) {
     let sidebar = editor.sidebar_width();
     let bars = editor.tab_bar_height();
     let gutter = gutter_width(editor.buffer());
+    let terminal_height = editor.terminal_height();
     let content_height = area.height.saturating_sub(1);
-    let text_height = content_height.saturating_sub(bars);
+    let body_height = content_height.saturating_sub(terminal_height);
+    let text_height = body_height.saturating_sub(bars);
     let text_width = area.width.saturating_sub(sidebar).saturating_sub(gutter);
     let content = Rect {
         x: area.x.saturating_add(sidebar),
@@ -51,7 +54,7 @@ pub fn draw(frame: &mut Frame, editor: &Editor) {
             x: area.x,
             y: area.y,
             width: sidebar,
-            height: content_height,
+            height: body_height,
         };
         sidebar::draw_tree(buffer, editor, tree_area);
     }
@@ -64,8 +67,52 @@ pub fn draw(frame: &mut Frame, editor: &Editor) {
         draw_text(buffer, editor, content, gutter, text_width, text_height);
     }
     draw_petals(buffer, editor, content, gutter, text_width, text_height);
+    draw_terminal(buffer, editor, area, terminal_height);
     palette::draw(buffer, editor, area);
     draw_status(buffer, editor, area);
+}
+
+fn draw_terminal(target: &mut TuiBuffer, editor: &Editor, area: Rect, height: u16) {
+    if height == 0 {
+        return;
+    }
+    let separator_y = area
+        .y
+        .saturating_add(area.height)
+        .saturating_sub(1)
+        .saturating_sub(height);
+    let separator = Rect {
+        x: area.x,
+        y: separator_y,
+        width: area.width,
+        height: 1,
+    };
+    let focused = editor.focus() == Focus::Terminal;
+    let style = if focused {
+        editor.theme().status_bar()
+    } else {
+        editor.theme().line_number_style()
+    };
+    target.set_style(separator, style);
+    target.set_string(area.x, separator_y, " Terminal ", style);
+    let Some(pane) = editor.terminal() else {
+        return;
+    };
+    let content = Rect {
+        x: area.x,
+        y: separator_y.saturating_add(1),
+        width: area.width,
+        height: height.saturating_sub(1),
+    };
+    let Some((x, y)) = terminal::draw(pane.screen(), target, content) else {
+        return;
+    };
+    if !focused {
+        return;
+    }
+    if let Some(cell) = target.cell_mut((x, y)) {
+        cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+    }
 }
 
 fn draw_welcome(
@@ -402,7 +449,7 @@ fn prompt_text(info: &PromptInfo<'_>) -> String {
             )
         }
         Focus::GoToLine => format!(" Go to line: {} ", info.goto),
-        Focus::Tree | Focus::Editor | Focus::Palette => String::new(),
+        Focus::Tree | Focus::Editor | Focus::Palette | Focus::Terminal => String::new(),
     }
 }
 
@@ -437,6 +484,7 @@ mod tests {
     use crate::buffer::{Buffer, CharIdx};
     use crate::command::Command;
     use crate::editor::Editor;
+    use crate::terminal::{Pane, Size};
     use crate::test_support::TempDir;
     use crate::theme::{ColorDepth, Theme};
 
@@ -604,18 +652,54 @@ mod tests {
         let path = dir.join("readonly.txt");
         fs::write(&path, "abc\n").unwrap();
         let mut editor = Editor::new(Buffer::open(&path).unwrap());
-        editor.resize(80, 3);
+        editor.resize(200, 3);
         editor.apply(Command::Insert('x'));
         let original = fs::metadata(&path).unwrap().permissions();
         let mut readonly = original.clone();
         readonly.set_readonly(true);
         fs::set_permissions(&path, readonly).unwrap();
         editor.apply(Command::Save);
-        let terminal = render(&editor, 80, 3);
+        let terminal = render(&editor, 200, 3);
 
-        let status = row(&terminal, 2, 80);
+        let status = row(&terminal, 2, 200);
         assert!(status.contains("read-only"));
         fs::set_permissions(&path, original).unwrap();
+    }
+
+    #[test]
+    fn terminal_pane_draws_output_separator_and_cursor() {
+        let mut editor = Editor::new(Buffer::from_text("abc"));
+        editor.resize(30, 12);
+        let mut pane = Pane::for_test(Size { rows: 3, cols: 30 });
+        pane.feed(b"hello");
+        editor.attach_terminal(pane);
+
+        let terminal = render(&editor, 30, 12);
+
+        assert!(row(&terminal, 6, 30).contains("Terminal"));
+        assert_eq!(symbol(&terminal, 0, 7), "h");
+        assert_eq!(symbol(&terminal, 4, 7), "o");
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((5, 7))
+                .map(ratatui::buffer::Cell::style)
+                .is_some_and(|style| style.add_modifier.contains(Modifier::REVERSED))
+        );
+    }
+
+    #[test]
+    fn closing_the_terminal_restores_the_full_text_area() {
+        let mut editor = Editor::new(Buffer::from_text(&numbered_lines(20)));
+        editor.resize(30, 12);
+        editor.attach_terminal(Pane::for_test(Size { rows: 3, cols: 30 }));
+        editor.close_terminal();
+
+        let terminal = render(&editor, 30, 12);
+
+        assert!(!row(&terminal, 6, 30).contains("Terminal"));
+        assert!(row(&terminal, 6, 10).contains('7'));
     }
 
     #[test]
