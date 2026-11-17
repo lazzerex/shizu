@@ -2,7 +2,7 @@
 
 shizu is a text editor that runs in a terminal. It keeps nano's modeless editing but uses tree-sitter for syntax highlighting, and unlike Helix you never switch modes to select, search, or save. I built it because I wanted the highlighting of a modal editor with the keybindings I already know, plus a theme that isn't an afterthought. It's for people who work over SSH and want a capable editor without a plugin setup.
 
-Status: pre-1.0. Editing, saving, search, undo, syntax highlighting, themes, animation, a file tree sidebar, and tabs work on Linux; the Windows and macOS code paths are written but untested.
+Status: pre-1.0. Editing, saving, search, undo, syntax highlighting, themes, animation, a file tree sidebar, tabs, and a bottom terminal pane are implemented. Interactive behavior is verified on Linux; the Windows and macOS code paths are written but untested.
 
 ## Why shizu
 
@@ -43,6 +43,7 @@ Starting without a path opens an empty buffer.
 - A gitignore-aware file tree sidebar with keyboard and mouse navigation.
 - Multiple buffers with tabs that reuse an already-open file.
 - A fuzzy command palette over files and commands, with context hints in the status bar.
+- A bottom terminal pane running your shell through a PTY, with keys forwarded to it.
 - Mouse click, drag, and wheel.
 - Optional config for theme, tab width, and animation.
 
@@ -65,6 +66,7 @@ It also preserves LF/CRLF and the final newline, saves through a temporary file 
 | Ctrl+G | Go to line |
 | Ctrl+P | Open the command palette |
 | Ctrl+B | Show or hide the file tree |
+| Ctrl+T | Show or hide the terminal pane |
 | Ctrl+W | Close the current tab, with confirmation when dirty |
 | Ctrl+PageDown, Ctrl+PageUp | Next tab, previous tab |
 | F3, Shift+F3 | Next match, previous match |
@@ -74,7 +76,9 @@ In the find prompt, Enter goes to the next match and Ctrl+P goes to the previous
 
 The file tree opens at the current buffer's directory. Use the arrow keys to move, Right to expand a directory, Left to collapse it, and Enter to open a file. Clicking a row also opens it. The tab bar appears once more than one buffer is open, and clicking a tab switches to it; opening a file that is already open selects its existing tab.
 
-The command palette opens at the buffer's directory. Type to fuzzy-match files, prefix the query with `>` to search commands instead, and press Enter to run the selected entry. Ctrl+P, Ctrl+S, Ctrl+F, Ctrl+B, and Ctrl+Q are shown in the status bar for the current focus.
+The command palette opens at the buffer's directory. Type to fuzzy-match files, prefix the query with `>` to search commands instead, and press Enter to run the selected entry. Ctrl+P, Ctrl+S, Ctrl+F, Ctrl+B, Ctrl+T, and Ctrl+Q are shown in the status bar for the current focus.
+
+Ctrl+T opens a terminal pane across the bottom of the window, focused on a new shell. While it has focus, keys are encoded and sent to the PTY, and Ctrl+T closes the pane and kills the shell. Clicking the text area returns focus to the editor without closing the pane. The pane resizes with the window.
 
 ## Configuration
 
@@ -99,7 +103,7 @@ animation = "idle"
 | --- | --- | --- |
 | Text | ropey | Rope-backed buffers and cheap line access |
 | Terminal | ratatui + crossterm | Rendering, input, mouse, alternate screen |
-| Embedded terminal (spike) | portable-pty + vt100 | Shell PTY, emulation, pane rendering |
+| Embedded terminal | portable-pty + vt100 | Shell PTY, emulation, bottom pane rendering |
 | Highlighting | tree-sitter | Incremental parsing with per-language grammars |
 | Clipboard | arboard | System clipboard integration |
 | Config | serde + toml | Optional theme and tab-width file |
@@ -128,23 +132,25 @@ src/
   config.rs        optional TOML config
   tree.rs          gitignore-aware file tree state
   palette.rs       fuzzy palette state and file listing
-  terminal/        PTY session, vt100 rendering, key encoding
-  ui/              frame, status bar, sidebar, palette, and tab rendering
+  terminal/        PTY process, vt100 pane, key encoding, rendering
+  ui/              frame, status bar, sidebar, palette, tab, and terminal rendering
 examples/
   terminal_spike.rs  standalone PTY and emulator pane
 ```
 
-## Terminal spike
+## Embedded terminal
 
-The embedded terminal is a spike, not an editor feature yet. Run it with:
+Ctrl+T opens the terminal pane in the editor. It runs the platform default shell through `portable-pty`, feeds output into `vt100`, forwards keys, and resizes the PTY when the pane changes size. Closing the pane kills the child process.
+
+`vt100` is the emulator decision. It provides the visible cell grid, cursor, colors, attributes, and alternate screen with a smaller dependency and API than `alacritty_terminal`. Scrollback and reflow are not needed for the pane, so the heavier emulator is not justified. Terminal query replies, mouse forwarding, scrollback rendering, and clipboard integration are not implemented.
+
+The standalone spike remains available:
 
 ```sh
 cargo run --example terminal_spike
 ```
 
-It opens a pane running the platform default shell through `portable-pty`, feeds the output into `vt100`, forwards keys, and resizes the PTY when the pane changes size. `Ctrl+Q` closes the spike.
-
-`vt100` is the emulator decision. It provides the visible cell grid, cursor, colors, attributes, and alternate screen with a smaller dependency and API than `alacritty_terminal`. Scrollback and reflow are not needed for the pane, so the heavier emulator is not justified. Terminal query replies, mouse forwarding, scrollback rendering, and clipboard integration are deferred to the full milestone.
+It opens the same pane without the editor and closes on `Ctrl+Q`.
 
 ## Testing
 
@@ -154,7 +160,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-There are 256 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, animation, tabs, the file tree, the command palette, and the terminal pane. The terminal spike is exercised with a real PTY on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
+There are 267 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, animation, tabs, the file tree, the command palette, and the terminal pane. The PTY session is exercised with a real PTY on Linux. Interactive behavior on Windows and macOS, clipboard interop, a crash during save, and the terminal pane in a real terminal still need manual checks.
 
 ## Non-goals
 
@@ -172,4 +178,4 @@ A new buffer with no path can't be saved yet; save reports that there is no path
 
 Windows and macOS key handling, mouse behavior, and clipboard integration are untested on those systems.
 
-Split panes are not implemented yet. The embedded terminal is only a spike and is not wired into the editor, and there's no language server support yet.
+Split panes are not implemented; the terminal is a single fixed bottom pane. Terminal mouse forwarding, scrollback rendering, query replies, and clipboard integration are not implemented, and there's no language server support yet.
