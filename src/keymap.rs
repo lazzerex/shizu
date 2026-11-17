@@ -129,6 +129,11 @@ const TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
         Command::ToggleSidebar,
     ),
     (KeyCode::Char('w'), KeyModifiers::CONTROL, Command::CloseTab),
+    (
+        KeyCode::Char('t'),
+        KeyModifiers::CONTROL,
+        Command::ToggleTerminal,
+    ),
     (KeyCode::PageDown, KeyModifiers::CONTROL, Command::NextTab),
     (KeyCode::PageUp, KeyModifiers::CONTROL, Command::PreviousTab),
 ];
@@ -153,9 +158,20 @@ const TREE_TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
     (KeyCode::Char('w'), KeyModifiers::CONTROL, Command::CloseTab),
     (KeyCode::Char('s'), KeyModifiers::CONTROL, Command::Save),
     (KeyCode::Char('q'), KeyModifiers::CONTROL, Command::Quit),
+    (
+        KeyCode::Char('t'),
+        KeyModifiers::CONTROL,
+        Command::ToggleTerminal,
+    ),
     (KeyCode::PageDown, KeyModifiers::CONTROL, Command::NextTab),
     (KeyCode::PageUp, KeyModifiers::CONTROL, Command::PreviousTab),
 ];
+
+const TERMINAL_TABLE: &[(KeyCode, KeyModifiers, Command)] = &[(
+    KeyCode::Char('t'),
+    KeyModifiers::CONTROL,
+    Command::ToggleTerminal,
+)];
 
 const FIND_TABLE: &[(KeyCode, KeyModifiers, Command)] = &[
     (KeyCode::Esc, KeyModifiers::NONE, Command::Cancel),
@@ -242,6 +258,10 @@ const EDITOR_HINTS: &[HintSpec] = &[
         label: "Sidebar",
     },
     HintSpec {
+        command: Command::ToggleTerminal,
+        label: "Terminal",
+    },
+    HintSpec {
         command: Command::Quit,
         label: "Quit",
     },
@@ -319,6 +339,11 @@ const GOTO_HINTS: &[HintSpec] = &[
     },
 ];
 
+const TERMINAL_HINTS: &[HintSpec] = &[HintSpec {
+    command: Command::ToggleTerminal,
+    label: "Close",
+}];
+
 const PALETTE_HINTS: &[HintSpec] = &[
     HintSpec {
         command: Command::PaletteAccept,
@@ -349,7 +374,12 @@ pub fn resolve(key: &KeyEvent, focus: Focus) -> Option<Command> {
         Focus::Replace => resolve_replace(key),
         Focus::GoToLine => resolve_goto(key),
         Focus::Palette => resolve_palette(key),
+        Focus::Terminal => resolve_terminal(key),
     }
+}
+
+fn resolve_terminal(key: &KeyEvent) -> Option<Command> {
+    resolve_table(key, TERMINAL_TABLE).or(Some(Command::TerminalKey(key.code, key.modifiers)))
 }
 
 fn resolve_editor(key: &KeyEvent) -> Option<Command> {
@@ -438,6 +468,7 @@ fn table(focus: Focus) -> &'static [(KeyCode, KeyModifiers, Command)] {
         Focus::Replace => REPLACE_TABLE,
         Focus::GoToLine => GOTO_TABLE,
         Focus::Palette => PALETTE_TABLE,
+        Focus::Terminal => TERMINAL_TABLE,
     }
 }
 
@@ -449,6 +480,7 @@ fn hint_specs(focus: Focus) -> &'static [HintSpec] {
         Focus::Replace => REPLACE_HINTS,
         Focus::GoToLine => GOTO_HINTS,
         Focus::Palette => PALETTE_HINTS,
+        Focus::Terminal => TERMINAL_HINTS,
     }
 }
 
@@ -912,6 +944,18 @@ mod tests {
     }
 
     #[test]
+    fn editor_and_tree_focus_open_the_terminal() {
+        assert_eq!(
+            resolve_editor(&key(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            Some(Command::ToggleTerminal)
+        );
+        assert_eq!(
+            resolve(&key(KeyCode::Char('t'), KeyModifiers::CONTROL), Focus::Tree),
+            Some(Command::ToggleTerminal)
+        );
+    }
+
+    #[test]
     fn editor_focus_opens_the_palette() {
         assert_eq!(
             resolve_editor(&key(KeyCode::Char('p'), KeyModifiers::CONTROL)),
@@ -990,6 +1034,30 @@ mod tests {
         assert!(palette_hints.contains("Enter Open"));
         assert!(palette_hints.contains("Esc Close"));
         assert!(!palette_hints.contains("Ctrl+S"));
+    }
+
+    #[test]
+    fn terminal_focus_forwards_keys_and_keeps_the_close_binding() {
+        assert_eq!(
+            resolve(
+                &key(KeyCode::Char('x'), KeyModifiers::NONE),
+                Focus::Terminal
+            ),
+            Some(Command::TerminalKey(KeyCode::Char('x'), KeyModifiers::NONE))
+        );
+        assert_eq!(
+            resolve(
+                &key(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                Focus::Terminal
+            ),
+            Some(Command::ToggleTerminal)
+        );
+    }
+
+    #[test]
+    fn hint_text_mentions_the_terminal_binding() {
+        assert!(super::hint_text(Focus::Editor).contains("Ctrl+T Terminal"));
+        assert!(super::hint_text(Focus::Terminal).contains("Ctrl+T Close"));
     }
 
     #[test]
