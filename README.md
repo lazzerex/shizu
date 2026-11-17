@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/shizu-logo.png" alt="shizu" width="480" /></p>
+<p align="center"><img src="docs/shizu-logo.png" alt="shizu" width="640" /></p>
 
 <p align="center">
   <strong>A modeless terminal text editor with tree-sitter highlighting.</strong><br />
