@@ -1,3 +1,5 @@
+use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     MoveLeft { select: bool },
@@ -51,6 +53,8 @@ pub enum Command {
     PaletteInsert(char),
     PaletteBackspace,
     PaletteAccept,
+    ToggleTerminal,
+    TerminalKey(KeyCode, KeyModifiers),
 }
 
 impl Command {
@@ -91,6 +95,7 @@ impl Command {
             Self::FindNext => Some("Next match"),
             Self::FindPrevious => Some("Previous match"),
             Self::ToggleSidebar => Some("Toggle sidebar"),
+            Self::ToggleTerminal => Some("Terminal"),
             Self::CloseTab => Some("Close tab"),
             Self::NextTab => Some("Next tab"),
             Self::PreviousTab => Some("Previous tab"),
@@ -114,7 +119,8 @@ impl Command {
             | Self::PaletteDown
             | Self::PaletteInsert(_)
             | Self::PaletteBackspace
-            | Self::PaletteAccept => None,
+            | Self::PaletteAccept
+            | Self::TerminalKey(..) => None,
         }
     }
 }
