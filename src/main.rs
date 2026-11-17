@@ -15,7 +15,7 @@ use shizu::command::Command;
 use shizu::config::{self, Config};
 use shizu::editor::Editor;
 use shizu::theme::{ColorDepth, Theme};
-use shizu::{Event, event, keymap, ui};
+use shizu::{Event, event, keymap, terminal, ui};
 
 struct TerminalGuard;
 
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     editor.resize(size.width, size.height);
     terminal.draw(|frame| ui::draw(frame, &editor))?;
 
-    let events = event::channel()?;
+    let (events_tx, events) = event::channel()?;
     let mut clipboard = Clipboard::new();
     loop {
         let wait_now = Instant::now();
@@ -121,8 +121,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 editor.resize(width, height);
                 true
             }
+            Event::PtyOutput(id, bytes) => editor.feed_terminal(id, &bytes),
+            Event::PtyClosed(id) => {
+                editor.terminal_closed(id);
+                true
+            }
             Event::Tick => editor.tick(now),
         };
+        if let Some(size) = editor.take_terminal_request() {
+            match terminal::Pane::shell(size, events_tx.clone()) {
+                Ok(pane) => editor.attach_terminal(pane),
+                Err(error) => editor.terminal_failed(&error.to_string()),
+            }
+            changed = true;
+        }
         if let Some(text) = editor.take_clipboard_request()
             && !clipboard.set_text(&text)
         {
