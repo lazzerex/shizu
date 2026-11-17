@@ -8,11 +8,14 @@
 
 use std::io::{self, Read, Write};
 use std::num::NonZeroU16;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread;
 
 use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+use crate::event::Event;
 
 mod view;
 
@@ -54,22 +57,105 @@ impl Size {
     }
 }
 
-/// A shell running under a PTY, with its output connected to a caller.
-pub struct Session {
+pub struct Pane {
+    id: u64,
+    session: Option<Session>,
+    parser: vt100::Parser,
+}
+
+impl Pane {
+    /// Spawns the platform default shell at the given size.
+    pub fn shell(size: Size, output: Sender<Event>) -> io::Result<Self> {
+        Self::spawn(size, CommandBuilder::new_default_prog(), output)
+    }
+
+    fn spawn(size: Size, command: CommandBuilder, output: Sender<Event>) -> io::Result<Self> {
+        let id = next_id();
+        let session = Session::spawn(size, command, output, id)?;
+        let (rows, cols) = size.nonzero()?;
+        Ok(Self {
+            id,
+            session: Some(session),
+            parser: vt100::Parser::new(rows, cols, SCROLLBACK),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(size: Size) -> Self {
+        let (rows, cols) = size.nonzero().expect("valid terminal size");
+        Self {
+            id: next_id(),
+            session: None,
+            parser: vt100::Parser::new(rows, cols, SCROLLBACK),
+        }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Feeds PTY output into the emulator.
+    pub fn feed(&mut self, bytes: &[u8]) {
+        self.parser.process(bytes);
+    }
+
+    pub fn screen(&self) -> &vt100::Screen {
+        self.parser.screen()
+    }
+
+    /// Forwards one key to the shell.
+    pub fn write_key(&mut self, key: KeyEvent) -> io::Result<()> {
+        let Some(bytes) = encode_key(&key) else {
+            return Ok(());
+        };
+        self.write(&bytes)
+    }
+
+    pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let Some(session) = self.session.as_mut() else {
+            return Ok(());
+        };
+        session.write(bytes)
+    }
+
+    /// Resizes both the emulator and the kernel PTY.
+    pub fn resize(&mut self, size: Size) -> io::Result<()> {
+        let (rows, cols) = size.nonzero()?;
+        if let Some(session) = self.session.as_mut() {
+            session.resize(size)?;
+        }
+        self.parser.set_size(rows, cols);
+        Ok(())
+    }
+
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        let Some(session) = self.session.as_mut() else {
+            return Err(io::Error::other("terminal pane has no process"));
+        };
+        session.wait()
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.child.process_id())
+    }
+}
+
+struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
-    parser: vt100::Parser,
-    exited: bool,
 }
 
 impl Session {
-    /// Spawns `command` at the given size.
-    ///
-    /// Output chunks are sent to `output` from a dedicated reader thread. The
-    /// channel closing means the PTY reached end of file.
-    pub fn spawn(size: Size, command: CommandBuilder, output: Sender<Vec<u8>>) -> io::Result<Self> {
-        let (rows, cols) = size.nonzero()?;
+    fn spawn(
+        size: Size,
+        command: CommandBuilder,
+        output: Sender<Event>,
+        id: u64,
+    ) -> io::Result<Self> {
         let pair = native_pty_system()
             .openpty(size.pty())
             .map_err(io::Error::other)?;
@@ -94,7 +180,7 @@ impl Session {
         };
         if let Err(error) = thread::Builder::new()
             .name("shizu-pty".to_owned())
-            .spawn(move || read_output(&mut reader, &output))
+            .spawn(move || read_output(&mut reader, &output, id))
         {
             stop_child(&mut child);
             return Err(error);
@@ -103,67 +189,32 @@ impl Session {
             master: pair.master,
             writer,
             child,
-            parser: vt100::Parser::new(rows, cols, SCROLLBACK),
-            exited: false,
         })
     }
 
-    /// Spawns the platform default shell.
-    pub fn shell(size: Size, output: Sender<Vec<u8>>) -> io::Result<Self> {
-        Self::spawn(size, CommandBuilder::new_default_prog(), output)
-    }
-
-    /// Feeds PTY output into the emulator.
-    pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.process(bytes);
-    }
-
-    pub fn screen(&self) -> &vt100::Screen {
-        self.parser.screen()
-    }
-
-    /// Forwards one key to the shell.
-    pub fn write_key(&mut self, key: KeyEvent) -> io::Result<()> {
-        let Some(bytes) = encode_key(&key) else {
-            return Ok(());
-        };
-        self.write(&bytes)
-    }
-
-    pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.writer.write_all(bytes)?;
         self.writer.flush()
     }
 
-    /// Resizes both the emulator and the kernel PTY.
-    pub fn resize(&mut self, size: Size) -> io::Result<()> {
-        let (rows, cols) = size.nonzero()?;
-        self.master.resize(size.pty()).map_err(io::Error::other)?;
-        self.parser.set_size(rows, cols);
-        Ok(())
+    fn resize(&mut self, size: Size) -> io::Result<()> {
+        self.master.resize(size.pty()).map_err(io::Error::other)
     }
 
-    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        let status = self.child.try_wait()?;
-        if status.is_some() {
-            self.exited = true;
-        }
-        Ok(status)
-    }
-
-    pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        let status = self.child.wait()?;
-        self.exited = true;
-        Ok(status)
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child.wait()
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if !self.exited {
-            stop_child(&mut self.child);
-        }
+        stop_child(&mut self.child);
     }
+}
+
+fn next_id() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 fn stop_child(child: &mut Box<dyn Child + Send + Sync>) {
@@ -171,16 +222,19 @@ fn stop_child(child: &mut Box<dyn Child + Send + Sync>) {
     let _ = child.wait();
 }
 
-fn read_output(reader: &mut dyn Read, output: &Sender<Vec<u8>>) {
+fn read_output(reader: &mut dyn Read, output: &Sender<Event>, id: u64) {
     let mut buffer = [0u8; 8192];
     loop {
         match reader.read(&mut buffer) {
-            Ok(0) => break,
+            Ok(0) => {
+                let _ = output.send(Event::PtyClosed(id));
+                break;
+            }
             Ok(read) => {
                 let Some(chunk) = buffer.get(..read) else {
                     break;
                 };
-                if output.send(chunk.to_vec()).is_err() {
+                if output.send(Event::PtyOutput(id, chunk.to_vec())).is_err() {
                     break;
                 }
             }
@@ -268,12 +322,19 @@ fn function_key(number: u8) -> Option<&'static [u8]> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::sync::mpsc;
+    #[cfg(unix)]
     use std::time::Duration;
 
+    #[cfg(unix)]
     use portable_pty::CommandBuilder;
 
-    use super::{KeyCode, KeyEvent, KeyModifiers, Session, Size, encode_key};
+    use super::{KeyCode, KeyEvent, KeyModifiers, encode_key};
+    #[cfg(unix)]
+    use super::{Pane, Size};
+    #[cfg(unix)]
+    use crate::event::Event;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -342,9 +403,9 @@ mod tests {
         let mut command = CommandBuilder::new("sh");
         command.arg("-c");
         command.arg("printf 'hello from pty\\n'");
-        let mut session = Session::spawn(Size { rows: 6, cols: 40 }, command, sender).unwrap();
+        let mut session = Pane::spawn(Size { rows: 6, cols: 40 }, command, sender).unwrap();
         let mut collected = Vec::new();
-        while let Ok(chunk) = receiver.recv_timeout(Duration::from_secs(5)) {
+        while let Ok(Event::PtyOutput(_, chunk)) = receiver.recv_timeout(Duration::from_secs(5)) {
             collected.extend_from_slice(&chunk);
             session.feed(&chunk);
             if collected
@@ -366,11 +427,11 @@ mod tests {
         let mut command = CommandBuilder::new("sh");
         command.arg("-c");
         command.arg("read line; stty size");
-        let mut session = Session::spawn(Size { rows: 10, cols: 40 }, command, sender).unwrap();
+        let mut session = Pane::spawn(Size { rows: 10, cols: 40 }, command, sender).unwrap();
         session.resize(Size { rows: 5, cols: 20 }).unwrap();
         session.write(b"go\n").unwrap();
         let mut collected = Vec::new();
-        while let Ok(chunk) = receiver.recv_timeout(Duration::from_secs(5)) {
+        while let Ok(Event::PtyOutput(_, chunk)) = receiver.recv_timeout(Duration::from_secs(5)) {
             collected.extend_from_slice(&chunk);
             session.feed(&chunk);
             if collected
@@ -392,8 +453,8 @@ mod tests {
         let mut command = CommandBuilder::new("sh");
         command.arg("-c");
         command.arg("sleep 30");
-        let session = Session::spawn(Size { rows: 5, cols: 20 }, command, sender).unwrap();
-        let pid = session.child.process_id().unwrap();
+        let session = Pane::spawn(Size { rows: 5, cols: 20 }, command, sender).unwrap();
+        let pid = session.process_id().unwrap();
         drop(session);
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }
