@@ -16,6 +16,7 @@ mod palette;
 mod prompt;
 mod sidebar;
 mod tabs;
+mod terminal_pane;
 
 use tabs::Tab;
 
@@ -27,6 +28,7 @@ pub enum Focus {
     Replace,
     GoToLine,
     Palette,
+    Terminal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +91,8 @@ pub struct Editor {
     bloom: Bloom,
     idle: Idle,
     tree: Option<FileTree>,
+    terminal: Option<crate::terminal::Pane>,
+    terminal_request: Option<crate::terminal::Size>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +133,8 @@ impl Editor {
             bloom: Bloom::new(crate::anim::time_seed()),
             idle: Idle::new(Instant::now()),
             tree: None,
+            terminal: None,
+            terminal_request: None,
         }
     }
 
@@ -219,6 +225,7 @@ impl Editor {
 
     pub fn resize(&mut self, width: u16, height: u16) {
         self.viewport = Viewport { width, height };
+        self.resize_terminal();
         self.bloom.clear();
         self.ensure_visible();
         self.refresh_highlights();
@@ -301,6 +308,10 @@ impl Editor {
             Command::PaletteInsert(character) => self.palette_insert(character),
             Command::PaletteBackspace => self.palette_backspace(),
             Command::PaletteAccept => self.palette_accept(),
+            Command::ToggleTerminal => self.toggle_terminal(),
+            Command::TerminalKey(code, modifiers) => {
+                self.terminal_write_key(code, modifiers);
+            }
         }
         if self.buffer().revision() != revision {
             self.prompt.matches.clear();
@@ -338,6 +349,7 @@ impl Editor {
                 .tree
                 .as_ref()
                 .map(|tree| (tree.revision(), tree.visible())),
+            terminal: self.terminal_state(),
         }
     }
 
@@ -351,6 +363,7 @@ impl Editor {
         usize::from(self.viewport.height)
             .saturating_sub(1)
             .saturating_sub(usize::from(self.tab_bar_height()))
+            .saturating_sub(usize::from(self.terminal_height()))
     }
 
     fn ensure_visible(&mut self) {
@@ -392,6 +405,7 @@ struct State {
     tab_count: usize,
     active_tab: usize,
     tree: Option<(u64, bool)>,
+    terminal: terminal_pane::TerminalState,
 }
 
 fn record(
