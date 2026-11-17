@@ -99,6 +99,7 @@ animation = "idle"
 | --- | --- | --- |
 | Text | ropey | Rope-backed buffers and cheap line access |
 | Terminal | ratatui + crossterm | Rendering, input, mouse, alternate screen |
+| Embedded terminal (spike) | portable-pty + vt100 | Shell PTY, emulation, pane rendering |
 | Highlighting | tree-sitter | Incremental parsing with per-language grammars |
 | Clipboard | arboard | System clipboard integration |
 | Config | serde + toml | Optional theme and tab-width file |
@@ -127,8 +128,23 @@ src/
   config.rs        optional TOML config
   tree.rs          gitignore-aware file tree state
   palette.rs       fuzzy palette state and file listing
+  terminal/        PTY session, vt100 rendering, key encoding
   ui/              frame, status bar, sidebar, palette, and tab rendering
+examples/
+  terminal_spike.rs  standalone PTY and emulator pane
 ```
+
+## Terminal spike
+
+The embedded terminal is a spike, not an editor feature yet. Run it with:
+
+```sh
+cargo run --example terminal_spike
+```
+
+It opens a pane running the platform default shell through `portable-pty`, feeds the output into `vt100`, forwards keys, and resizes the PTY when the pane changes size. `Ctrl+Q` closes the spike.
+
+`vt100` is the emulator decision. It provides the visible cell grid, cursor, colors, attributes, and alternate screen with a smaller dependency and API than `alacritty_terminal`. Scrollback and reflow are not needed for the pane, so the heavier emulator is not justified. Terminal query replies, mouse forwarding, scrollback rendering, and clipboard integration are deferred to the full milestone.
 
 ## Testing
 
@@ -138,7 +154,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-There are 245 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, animation, tabs, the file tree, and the command palette. The terminal itself is exercised with a pty harness on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
+There are 256 unit and render tests covering buffer edits, save behavior, scrolling, keymap resolution, selection, undo, search, themes, highlighting, animation, tabs, the file tree, the command palette, and the terminal pane. The terminal spike is exercised with a real PTY on Linux. Interactive behavior on Windows and macOS, clipboard interop, and a crash during save still need manual checks.
 
 ## Non-goals
 
@@ -156,4 +172,4 @@ A new buffer with no path can't be saved yet; save reports that there is no path
 
 Windows and macOS key handling, mouse behavior, and clipboard integration are untested on those systems.
 
-Split panes are not implemented yet. There's no embedded terminal or language server support yet.
+Split panes are not implemented yet. The embedded terminal is only a spike and is not wired into the editor, and there's no language server support yet.
