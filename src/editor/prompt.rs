@@ -15,7 +15,7 @@ impl Editor {
                 self.prompt.origin = self.tabs[self.active].view.cursor();
             }
             Focus::GoToLine => self.prompt.goto.clear(),
-            Focus::Tree | Focus::Editor | Focus::Palette => {}
+            Focus::Tree | Focus::Editor | Focus::Palette | Focus::Terminal => {}
         }
     }
 
@@ -95,7 +95,7 @@ impl Editor {
                 PromptField::Replace => self.prompt.replacement.push(character),
             },
             Focus::GoToLine => self.prompt.goto.push(character),
-            Focus::Tree | Focus::Editor | Focus::Palette => {}
+            Focus::Tree | Focus::Editor | Focus::Palette | Focus::Terminal => {}
         }
     }
 
@@ -119,7 +119,7 @@ impl Editor {
             Focus::GoToLine => {
                 self.prompt.goto.pop();
             }
-            Focus::Tree | Focus::Editor | Focus::Palette => {}
+            Focus::Tree | Focus::Editor | Focus::Palette | Focus::Terminal => {}
         }
     }
 
@@ -127,7 +127,7 @@ impl Editor {
         match self.focus {
             Focus::Find | Focus::Replace => self.find_step(1),
             Focus::GoToLine => self.goto_line(),
-            Focus::Tree | Focus::Editor | Focus::Palette => {}
+            Focus::Tree | Focus::Editor | Focus::Palette | Focus::Terminal => {}
         }
     }
 
