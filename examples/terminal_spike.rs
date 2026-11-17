@@ -22,7 +22,8 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use shizu::terminal::{self, Session, Size};
+use shizu::Event;
+use shizu::terminal::{self, Pane, Size};
 
 const FOOTER_HEIGHT: u16 = 2;
 const BORDER_HEIGHT: u16 = 2;
@@ -67,19 +68,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pane_size(area.width, area.height).ok_or("terminal is too small for the terminal spike")?;
 
     let (output_tx, output_rx) = mpsc::channel();
-    let mut session = Session::shell(size, output_tx)?;
+    let mut session = Pane::shell(size, output_tx)?;
     let (event_tx, event_rx) = mpsc::channel();
 
     let output_events = event_tx.clone();
     thread::Builder::new()
         .name("shizu-pty-output".to_owned())
         .spawn(move || {
-            while let Ok(bytes) = output_rx.recv() {
-                if output_events.send(AppEvent::Output(bytes)).is_err() {
+            while let Ok(event) = output_rx.recv() {
+                let event = match event {
+                    Event::PtyOutput(_, bytes) => AppEvent::Output(bytes),
+                    Event::PtyClosed(_) => AppEvent::Closed,
+                    _ => continue,
+                };
+                if output_events.send(event).is_err() {
                     return;
                 }
             }
-            let _ = output_events.send(AppEvent::Closed);
         })?;
 
     thread::Builder::new()
@@ -145,7 +150,7 @@ fn pane_size(width: u16, height: u16) -> Option<Size> {
     (rows > 0 && cols > 0).then_some(Size { rows, cols })
 }
 
-fn draw(frame: &mut ratatui::Frame, session: &Session, message: Option<&str>) {
+fn draw(frame: &mut ratatui::Frame, session: &Pane, message: Option<&str>) {
     let area = frame.area();
     let [pane, footer] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(FOOTER_HEIGHT)]).areas(area);
