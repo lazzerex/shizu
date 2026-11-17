@@ -1,5 +1,5 @@
 use std::io;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use ratatui::crossterm::event::{self as terminal, Event as TerminalEvent, KeyEvent, MouseEvent};
@@ -9,11 +9,14 @@ pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize(u16, u16),
+    PtyOutput(u64, Vec<u8>),
+    PtyClosed(u64),
     Tick,
 }
 
-pub fn channel() -> io::Result<Receiver<Event>> {
+pub fn channel() -> io::Result<(Sender<Event>, Receiver<Event>)> {
     let (sender, receiver) = mpsc::channel();
+    let events = sender.clone();
     thread::Builder::new()
         .name("shizu-input".to_owned())
         .spawn(move || {
@@ -29,5 +32,5 @@ pub fn channel() -> io::Result<Receiver<Event>> {
                 }
             }
         })?;
-    Ok(receiver)
+    Ok((events, receiver))
 }
