@@ -61,6 +61,10 @@ impl Editor {
             .page_down(&self.buffers[index], height, select);
     }
     pub(super) fn click(&mut self, column: u16, row: u16) {
+        if self.row_in_terminal(row) {
+            self.focus = Focus::Terminal;
+            return;
+        }
         let sidebar = self.sidebar_width();
         let bars = self.tab_bar_height();
         if bars > 0 && row < bars {
@@ -91,6 +95,9 @@ impl Editor {
     }
 
     pub(super) fn drag(&mut self, column: u16, row: u16) {
+        if self.row_in_terminal(row) {
+            return;
+        }
         let sidebar = self.sidebar_width();
         if column < sidebar {
             return;
