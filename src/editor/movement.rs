@@ -120,6 +120,12 @@ impl Editor {
     }
 
     pub(super) fn scroll_lines(&mut self, delta: isize) {
+        if self.focus == Focus::Terminal
+            && let Some(pane) = self.terminal.as_mut()
+        {
+            pane.scroll_lines(delta);
+            return;
+        }
         let height = self.text_height();
         let index = self.tabs[self.active].view.buffer_id().index();
         let max = self.buffers[index].len_lines().saturating_sub(height);
