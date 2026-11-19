@@ -1,10 +1,3 @@
-//! Embedded terminal spike.
-//!
-//! Runs a shell through `portable-pty`, renders it with `vt100`, forwards
-//! keys, and resizes the PTY when the pane changes size.
-//!
-//! Run with `cargo run --example terminal_spike`. Ctrl+Q closes the spike.
-
 use std::io::{self, stdout};
 use std::sync::mpsc;
 use std::thread;
@@ -124,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     session.resize(size)?;
                 }
             }
-            AppEvent::Output(bytes) => session.feed(&bytes),
+            AppEvent::Output(bytes) => session.feed(&bytes)?,
             AppEvent::Closed => {
                 let status = session.wait()?;
                 message = Some(format!("shell exited ({status}); press any key to close"));
