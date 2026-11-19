@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/ratatui-crossterm-DC4A30?logo=ratatui&logoColor=white" alt="ratatui + crossterm" />
   <img src="https://img.shields.io/badge/tree--sitter-highlighting-4B9CD3" alt="tree-sitter" />
   <img src="https://img.shields.io/badge/status-pre--1.0-orange" alt="Status: pre-1.0" />
-  <img src="https://img.shields.io/badge/tests-267-green" alt="267 tests" />
+  <img src="https://img.shields.io/badge/tests-277-green" alt="277 tests" />
   <img src="https://img.shields.io/badge/Verified-Linux-FCC624?logo=linux&logoColor=black" alt="Verified on Linux" />
 </p>
 
@@ -124,7 +124,7 @@ Starting without a path opens an empty buffer.
 - A fuzzy command palette over files and commands, with context hints in the
   status bar.
 - A bottom terminal pane running your shell through a PTY, with keys forwarded
-  to it.
+  to it, scrollback browsing, and terminal query replies.
 
 ## Keys
 
@@ -144,6 +144,7 @@ Starting without a path opens an empty buffer.
 | Ctrl+P | Open the command palette |
 | Ctrl+B | Show or hide the file tree |
 | Ctrl+T | Show or hide the terminal pane |
+| Shift+PageUp, Shift+PageDown | Scroll the terminal pane while it has focus |
 | Ctrl+W | Close the current tab, with confirmation when dirty |
 | Ctrl+PageDown, Ctrl+PageUp | Next tab, previous tab |
 | F3, Shift+F3 | Next match, previous match |
@@ -259,11 +260,15 @@ into `vt100`, forwards keys, and resizes the PTY when the pane changes size.
 - While the pane has focus, keys are encoded and sent to the PTY. Ctrl+T closes
   the pane and kills the shell.
 - Clicking the text area returns focus to the editor without closing the pane.
+- Shift+PageUp and Shift+PageDown browse up to 1000 lines of scrollback, and the
+  mouse wheel does the same while the pane has focus. The separator shows the
+  current offset, and typing returns to the live output.
+- Device status and attribute queries are answered, and cursor keys use
+  application mode when the shell asks for it.
 
 `vt100` is the emulator decision. It provides the visible cell grid, cursor,
-colors, attributes, and alternate screen with a smaller dependency and API than
-`alacritty_terminal`. Scrollback and reflow are not needed for the pane, so the
-heavier emulator is not justified.
+colors, attributes, alternate screen, and scrollback with a smaller dependency
+and API than `alacritty_terminal`.
 
 The standalone spike opens the same pane without the editor and closes on
 `Ctrl+Q`:
@@ -280,7 +285,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-There are 267 unit and render tests covering buffer edits, save behavior,
+There are 277 unit and render tests covering buffer edits, save behavior,
 scrolling, keymap resolution, selection, undo, search, themes, highlighting,
 animation, tabs, the file tree, the command palette, and the terminal pane. The
 PTY session is exercised with a real PTY on Linux.
@@ -309,5 +314,5 @@ won't add telemetry, ads, or auto-updates.
 - Windows and macOS key handling, mouse behavior, and clipboard integration are
   untested on those systems.
 - Split panes are not implemented; the terminal is a single fixed bottom pane.
-  Terminal query replies, mouse forwarding, scrollback rendering, and clipboard
-  integration are not implemented, and there's no language server support yet.
+  Mouse forwarding, clipboard integration, and reflow are not implemented, and
+  there's no language server support yet.
