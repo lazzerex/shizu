@@ -81,7 +81,10 @@ impl Editor {
         if pane.id() != id {
             return false;
         }
-        pane.feed(bytes);
+        let result = pane.feed(bytes);
+        if let Err(error) = result {
+            self.message = Some(format!("terminal write failed: {error}"));
+        }
         true
     }
 
@@ -97,9 +100,22 @@ impl Editor {
         let Some(pane) = self.terminal.as_mut() else {
             return;
         };
-        if let Err(error) =
-            pane.write_key(ratatui::crossterm::event::KeyEvent::new(code, modifiers))
-        {
+        if modifiers.contains(KeyModifiers::SHIFT) {
+            if code == KeyCode::PageUp {
+                pane.scroll_page(false);
+                return;
+            }
+            if code == KeyCode::PageDown {
+                pane.scroll_page(true);
+                return;
+            }
+        }
+        let result = pane.write_key(ratatui::crossterm::event::KeyEvent::new(code, modifiers));
+        if result.is_ok() {
+            pane.scroll_to_bottom();
+            return;
+        }
+        if let Err(error) = result {
             self.message = Some(format!("terminal write failed: {error}"));
         }
     }
@@ -152,6 +168,7 @@ mod tests {
     use crate::command::Command;
     use crate::editor::Focus;
     use crate::terminal::{Pane, Size};
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn editor() -> Editor {
         let mut editor = Editor::new(Buffer::from_text("abc"));
@@ -284,5 +301,57 @@ mod tests {
 
         assert_eq!(editor.focus(), Focus::Editor);
         assert_eq!(editor.message(), Some("terminal is too small"));
+    }
+
+    fn scrolled_editor() -> Editor {
+        let mut editor = editor();
+        let mut pane = pane();
+        for line in 0..8 {
+            pane.feed(format!("line{line}\r\n").as_bytes())
+                .expect("feed test output");
+        }
+        editor.attach_terminal(pane);
+        editor
+    }
+
+    #[test]
+    fn shift_page_up_scrolls_the_terminal_view() {
+        let mut editor = scrolled_editor();
+
+        assert!(editor.apply(Command::TerminalKey(KeyCode::PageUp, KeyModifiers::SHIFT,)));
+
+        assert!(editor.terminal().expect("terminal pane").scrollback() > 0);
+        assert_eq!(editor.buffer().text(), "abc");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_terminal_when_it_is_focused() {
+        let mut editor = scrolled_editor();
+
+        assert!(editor.apply(Command::ScrollLines(-3)));
+
+        assert!(editor.terminal().expect("terminal pane").scrollback() > 0);
+    }
+
+    #[test]
+    fn typing_returns_the_terminal_to_the_bottom() {
+        let mut editor = scrolled_editor();
+        editor.apply(Command::ScrollLines(-3));
+        assert!(editor.terminal().expect("terminal pane").scrollback() > 0);
+
+        assert!(editor.apply(Command::TerminalKey(KeyCode::Char('x'), KeyModifiers::NONE,)));
+
+        assert_eq!(editor.terminal().expect("terminal pane").scrollback(), 0);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_editor_when_the_terminal_is_unfocused() {
+        let mut editor = scrolled_editor();
+        editor.apply(Command::Click { column: 2, row: 1 });
+        assert_eq!(editor.focus(), Focus::Editor);
+
+        editor.apply(Command::ScrollLines(-3));
+
+        assert_eq!(editor.terminal().expect("terminal pane").scrollback(), 0);
     }
 }
