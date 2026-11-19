@@ -350,6 +350,10 @@ impl Editor {
                 .as_ref()
                 .map(|tree| (tree.revision(), tree.visible())),
             terminal: self.terminal_state(),
+            terminal_scrollback: self
+                .terminal
+                .as_ref()
+                .map_or(0, crate::terminal::Pane::scrollback),
         }
     }
 
@@ -406,6 +410,7 @@ struct State {
     active_tab: usize,
     tree: Option<(u64, bool)>,
     terminal: terminal_pane::TerminalState,
+    terminal_scrollback: usize,
 }
 
 fn record(
