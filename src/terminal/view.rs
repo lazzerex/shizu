@@ -2,10 +2,6 @@ use ratatui::buffer::Buffer as TuiBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color as TuiColor, Modifier, Style};
 
-/// Draws the visible emulator screen into `target`.
-///
-/// Returns the cursor position in target coordinates when the emulator has a
-/// visible cursor inside `area`.
 pub fn draw(screen: &vt100::Screen, target: &mut TuiBuffer, area: Rect) -> Option<(u16, u16)> {
     if area.width == 0 || area.height == 0 {
         return None;
@@ -41,7 +37,7 @@ pub fn draw(screen: &vt100::Screen, target: &mut TuiBuffer, area: Rect) -> Optio
         }
     }
     let (row, col) = screen.cursor_position();
-    if screen.hide_cursor() || row >= rows || col >= cols {
+    if screen.hide_cursor() || screen.scrollback() > 0 || row >= rows || col >= cols {
         return None;
     }
     Some((area.x.saturating_add(col), area.y.saturating_add(row)))
@@ -165,6 +161,23 @@ mod tests {
         parser.process(b"\x1b[?25lhi");
         let mut target = buffer(12, 3);
         let cursor = draw(parser.screen(), &mut target, Rect::new(0, 0, 12, 3));
+        assert_eq!(cursor, None);
+    }
+
+    #[test]
+    fn hides_the_cursor_while_scrolled_back() {
+        let mut parser = vt100::Parser::new(
+            std::num::NonZeroU16::new(2).unwrap(),
+            std::num::NonZeroU16::new(12).unwrap(),
+            10,
+        );
+        parser.process(b"one\r\ntwo\r\nthree");
+        parser.screen_mut().set_scrollback(1);
+        let mut target = buffer(12, 2);
+
+        let cursor = draw(parser.screen(), &mut target, Rect::new(0, 0, 12, 2));
+
+        assert_eq!(target[(0, 0)].symbol(), "o");
         assert_eq!(cursor, None);
     }
 }
