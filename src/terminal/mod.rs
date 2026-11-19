@@ -1,11 +1,3 @@
-//! Embedded terminal spike: PTY process, emulation, and pane rendering.
-//!
-//! The spike uses `portable-pty` for the process side and `vt100` for the
-//! emulator. `vt100` was chosen over `alacritty_terminal` because the pane
-//! only needs the visible grid, cursor, colors, attributes, and alternate
-//! screen. `vt100` provides those with a much smaller dependency and API.
-//! Scrollback rendering and reflow are out of scope for the spike.
-
 use std::io::{self, Read, Write};
 use std::num::NonZeroU16;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,7 +15,6 @@ pub use view::draw;
 
 const SCROLLBACK: usize = 1000;
 
-/// Character-cell dimensions of a terminal pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Size {
     pub rows: u16,
@@ -57,14 +48,58 @@ impl Size {
     }
 }
 
+#[derive(Debug, Default)]
+struct Replies {
+    bytes: Vec<u8>,
+}
+
+impl Replies {
+    fn take(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
+}
+
+impl vt100::Callbacks for Replies {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        intermediate: Option<u8>,
+        _second: Option<u8>,
+        params: &[&[u16]],
+        kind: char,
+    ) {
+        if intermediate.is_some() {
+            return;
+        }
+        match kind {
+            'c' if params.is_empty() || single_param(params, 0) => {
+                self.bytes.extend_from_slice(b"\x1b[?1;2c");
+            }
+            'n' if single_param(params, 6) => {
+                let (row, col) = screen.cursor_position();
+                self.bytes
+                    .extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
+            }
+            'n' if single_param(params, 5) => self.bytes.extend_from_slice(b"\x1b[0n"),
+            _ => {}
+        }
+    }
+}
+
+fn single_param(params: &[&[u16]], value: u16) -> bool {
+    match params {
+        [param] => param.len() == 1 && param.first() == Some(&value),
+        _ => false,
+    }
+}
+
 pub struct Pane {
     id: u64,
     session: Option<Session>,
-    parser: vt100::Parser,
+    parser: vt100::Parser<Replies>,
 }
 
 impl Pane {
-    /// Spawns the platform default shell at the given size.
     pub fn shell(size: Size, output: Sender<Event>) -> io::Result<Self> {
         Self::spawn(size, CommandBuilder::new_default_prog(), output)
     }
@@ -76,7 +111,7 @@ impl Pane {
         Ok(Self {
             id,
             session: Some(session),
-            parser: vt100::Parser::new(rows, cols, SCROLLBACK),
+            parser: vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK, Replies::default()),
         })
     }
 
@@ -86,7 +121,7 @@ impl Pane {
         Self {
             id: next_id(),
             session: None,
-            parser: vt100::Parser::new(rows, cols, SCROLLBACK),
+            parser: vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK, Replies::default()),
         }
     }
 
@@ -94,21 +129,48 @@ impl Pane {
         self.id
     }
 
-    /// Feeds PTY output into the emulator.
-    pub fn feed(&mut self, bytes: &[u8]) {
+    pub fn feed(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.parser.process(bytes);
+        let replies = self.parser.callbacks_mut().take();
+        if replies.is_empty() {
+            return Ok(());
+        }
+        self.write(&replies)
     }
 
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
     }
 
-    /// Forwards one key to the shell.
     pub fn write_key(&mut self, key: KeyEvent) -> io::Result<()> {
-        let Some(bytes) = encode_key(&key) else {
+        let application_cursor = self.parser.screen().application_cursor();
+        let Some(bytes) = encode_key(&key, application_cursor) else {
             return Ok(());
         };
         self.write(&bytes)
+    }
+
+    pub fn scrollback(&self) -> usize {
+        self.parser.screen().scrollback()
+    }
+
+    pub fn scroll_lines(&mut self, lines: isize) {
+        let offset = self
+            .parser
+            .screen()
+            .scrollback()
+            .saturating_add_signed(lines.saturating_neg());
+        self.parser.screen_mut().set_scrollback(offset);
+    }
+
+    pub fn scroll_page(&mut self, down: bool) {
+        let rows = self.parser.screen().size().0.get();
+        let step = isize::try_from(rows.saturating_sub(1).max(1)).unwrap_or(isize::MAX);
+        self.scroll_lines(if down { step } else { -step });
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.parser.screen_mut().set_scrollback(0);
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -118,7 +180,6 @@ impl Pane {
         session.write(bytes)
     }
 
-    /// Resizes both the emulator and the kernel PTY.
     pub fn resize(&mut self, size: Size) -> io::Result<()> {
         let (rows, cols) = size.nonzero()?;
         if let Some(session) = self.session.as_mut() {
@@ -244,7 +305,7 @@ fn read_output(reader: &mut dyn Read, output: &Sender<Event>, id: u64) {
     }
 }
 
-fn encode_key(key: &KeyEvent) -> Option<Vec<u8>> {
+fn encode_key(key: &KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
     if key.kind == KeyEventKind::Release {
         return None;
     }
@@ -270,12 +331,12 @@ fn encode_key(key: &KeyEvent) -> Option<Vec<u8>> {
         KeyCode::BackTab => bytes.extend_from_slice(b"\x1b[Z"),
         KeyCode::Backspace => bytes.push(0x7f),
         KeyCode::Esc => bytes.push(0x1b),
-        KeyCode::Up => bytes.extend_from_slice(b"\x1b[A"),
-        KeyCode::Down => bytes.extend_from_slice(b"\x1b[B"),
-        KeyCode::Right => bytes.extend_from_slice(b"\x1b[C"),
-        KeyCode::Left => bytes.extend_from_slice(b"\x1b[D"),
-        KeyCode::Home => bytes.extend_from_slice(b"\x1b[H"),
-        KeyCode::End => bytes.extend_from_slice(b"\x1b[F"),
+        KeyCode::Up => bytes.extend_from_slice(&cursor_key(b'A', application_cursor)),
+        KeyCode::Down => bytes.extend_from_slice(&cursor_key(b'B', application_cursor)),
+        KeyCode::Right => bytes.extend_from_slice(&cursor_key(b'C', application_cursor)),
+        KeyCode::Left => bytes.extend_from_slice(&cursor_key(b'D', application_cursor)),
+        KeyCode::Home => bytes.extend_from_slice(&cursor_key(b'H', application_cursor)),
+        KeyCode::End => bytes.extend_from_slice(&cursor_key(b'F', application_cursor)),
         KeyCode::Insert => bytes.extend_from_slice(b"\x1b[2~"),
         KeyCode::Delete => bytes.extend_from_slice(b"\x1b[3~"),
         KeyCode::PageUp => bytes.extend_from_slice(b"\x1b[5~"),
@@ -284,6 +345,14 @@ fn encode_key(key: &KeyEvent) -> Option<Vec<u8>> {
         _ => return None,
     }
     Some(bytes)
+}
+
+fn cursor_key(final_byte: u8, application_cursor: bool) -> [u8; 3] {
+    [
+        0x1b,
+        if application_cursor { b'O' } else { b'[' },
+        final_byte,
+    ]
 }
 
 fn control_byte(character: char) -> Option<u8> {
@@ -330,9 +399,7 @@ mod tests {
     #[cfg(unix)]
     use portable_pty::CommandBuilder;
 
-    use super::{KeyCode, KeyEvent, KeyModifiers, encode_key};
-    #[cfg(unix)]
-    use super::{Pane, Size};
+    use super::{KeyCode, KeyEvent, KeyModifiers, Pane, Replies, Size, encode_key};
     #[cfg(unix)]
     use crate::event::Event;
 
@@ -340,26 +407,35 @@ mod tests {
         KeyEvent::new(code, modifiers)
     }
 
+    fn parser(rows: u16, cols: u16) -> vt100::Parser<Replies> {
+        vt100::Parser::new_with_callbacks(
+            std::num::NonZeroU16::new(rows).unwrap(),
+            std::num::NonZeroU16::new(cols).unwrap(),
+            10,
+            Replies::default(),
+        )
+    }
+
     #[test]
     fn encodes_text_and_control_keys() {
         assert_eq!(
-            encode_key(&key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            encode_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), false),
             Some(b"a".to_vec())
         );
         assert_eq!(
-            encode_key(&key(KeyCode::Char('C'), KeyModifiers::CONTROL)),
+            encode_key(&key(KeyCode::Char('C'), KeyModifiers::CONTROL), false),
             Some(vec![0x03])
         );
         assert_eq!(
-            encode_key(&key(KeyCode::Char('x'), KeyModifiers::ALT)),
+            encode_key(&key(KeyCode::Char('x'), KeyModifiers::ALT), false),
             Some(b"\x1bx".to_vec())
         );
         assert_eq!(
-            encode_key(&key(KeyCode::Esc, KeyModifiers::NONE)),
+            encode_key(&key(KeyCode::Esc, KeyModifiers::NONE), false),
             Some(vec![0x1b])
         );
         assert_eq!(
-            encode_key(&key(KeyCode::Backspace, KeyModifiers::NONE)),
+            encode_key(&key(KeyCode::Backspace, KeyModifiers::NONE), false),
             Some(vec![0x7f])
         );
     }
@@ -367,33 +443,96 @@ mod tests {
     #[test]
     fn encodes_navigation_and_function_keys() {
         assert_eq!(
-            encode_key(&key(KeyCode::Up, KeyModifiers::NONE)),
+            encode_key(&key(KeyCode::Up, KeyModifiers::NONE), false),
             Some(b"\x1b[A".to_vec())
         );
         assert_eq!(
-            encode_key(&key(KeyCode::Delete, KeyModifiers::NONE)),
+            encode_key(&key(KeyCode::Delete, KeyModifiers::NONE), false),
             Some(b"\x1b[3~".to_vec())
         );
         assert_eq!(
-            encode_key(&key(KeyCode::F(5), KeyModifiers::NONE)),
+            encode_key(&key(KeyCode::F(5), KeyModifiers::NONE), false),
             Some(b"\x1b[15~".to_vec())
         );
         assert_eq!(
-            encode_key(&key(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            encode_key(&key(KeyCode::BackTab, KeyModifiers::SHIFT), false),
             Some(b"\x1b[Z".to_vec())
         );
     }
 
     #[test]
-    fn ignores_unsupported_keys() {
-        assert_eq!(encode_key(&key(KeyCode::Null, KeyModifiers::NONE)), None);
+    fn encodes_cursor_keys_in_application_mode() {
         assert_eq!(
-            encode_key(&key(
-                KeyCode::Char('a'),
-                KeyModifiers::CONTROL | KeyModifiers::ALT
-            )),
+            encode_key(&key(KeyCode::Up, KeyModifiers::NONE), true),
+            Some(b"\x1bOA".to_vec())
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::End, KeyModifiers::NONE), true),
+            Some(b"\x1bOF".to_vec())
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::Delete, KeyModifiers::NONE), true),
+            Some(b"\x1b[3~".to_vec())
+        );
+    }
+
+    #[test]
+    fn ignores_unsupported_keys() {
+        assert_eq!(
+            encode_key(&key(KeyCode::Null, KeyModifiers::NONE), false),
+            None
+        );
+        assert_eq!(
+            encode_key(
+                &key(
+                    KeyCode::Char('a'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT
+                ),
+                false
+            ),
             Some(vec![0x1b, 0x01])
         );
+    }
+
+    #[test]
+    fn answers_device_status_and_attribute_queries() {
+        let mut parser = parser(5, 20);
+
+        parser.process(b"\x1b[3;7H\x1b[6n");
+        assert_eq!(parser.callbacks_mut().take(), b"\x1b[3;7R".to_vec());
+
+        parser.process(b"\x1b[c");
+        assert_eq!(parser.callbacks_mut().take(), b"\x1b[?1;2c".to_vec());
+
+        parser.process(b"\x1b[5n");
+        assert_eq!(parser.callbacks_mut().take(), b"\x1b[0n".to_vec());
+    }
+
+    #[test]
+    fn does_not_answer_other_queries() {
+        let mut parser = parser(5, 20);
+
+        parser.process(b"\x1b[?25l");
+
+        assert!(parser.callbacks_mut().take().is_empty());
+    }
+
+    #[test]
+    fn scrolling_stays_inside_the_scrollback() {
+        let mut pane = Pane::for_test(Size { rows: 2, cols: 10 });
+        for line in 0..5 {
+            pane.feed(format!("line{line}\r\n").as_bytes()).unwrap();
+        }
+        assert_eq!(pane.scrollback(), 0);
+
+        pane.scroll_page(false);
+        assert_eq!(pane.scrollback(), 1);
+
+        pane.scroll_page(true);
+        assert_eq!(pane.scrollback(), 0);
+
+        pane.scroll_page(true);
+        assert_eq!(pane.scrollback(), 0);
     }
 
     #[cfg(unix)]
@@ -407,7 +546,7 @@ mod tests {
         let mut collected = Vec::new();
         while let Ok(Event::PtyOutput(_, chunk)) = receiver.recv_timeout(Duration::from_secs(5)) {
             collected.extend_from_slice(&chunk);
-            session.feed(&chunk);
+            session.feed(&chunk).unwrap();
             if collected
                 .windows(b"hello from pty".len())
                 .any(|window| window == b"hello from pty")
@@ -433,7 +572,7 @@ mod tests {
         let mut collected = Vec::new();
         while let Ok(Event::PtyOutput(_, chunk)) = receiver.recv_timeout(Duration::from_secs(5)) {
             collected.extend_from_slice(&chunk);
-            session.feed(&chunk);
+            session.feed(&chunk).unwrap();
             if collected
                 .windows(b"5 20".len())
                 .any(|window| window == b"5 20")
