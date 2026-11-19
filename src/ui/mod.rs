@@ -94,10 +94,15 @@ fn draw_terminal(target: &mut TuiBuffer, editor: &Editor, area: Rect, height: u1
         editor.theme().line_number_style()
     };
     target.set_style(separator, style);
-    target.set_string(area.x, separator_y, " Terminal ", style);
     let Some(pane) = editor.terminal() else {
+        target.set_string(area.x, separator_y, " Terminal ", style);
         return;
     };
+    let label = match pane.scrollback() {
+        0 => " Terminal ".to_owned(),
+        offset => format!(" Terminal ↑{offset} "),
+    };
+    target.set_string(area.x, separator_y, &label, style);
     let content = Rect {
         x: area.x,
         y: separator_y.saturating_add(1),
@@ -671,7 +676,7 @@ mod tests {
         let mut editor = Editor::new(Buffer::from_text("abc"));
         editor.resize(30, 12);
         let mut pane = Pane::for_test(Size { rows: 3, cols: 30 });
-        pane.feed(b"hello");
+        pane.feed(b"hello").unwrap();
         editor.attach_terminal(pane);
 
         let terminal = render(&editor, 30, 12);
@@ -687,6 +692,22 @@ mod tests {
                 .map(ratatui::buffer::Cell::style)
                 .is_some_and(|style| style.add_modifier.contains(Modifier::REVERSED))
         );
+    }
+
+    #[test]
+    fn scrolled_terminal_shows_the_offset_in_the_separator() {
+        let mut editor = Editor::new(Buffer::from_text("abc"));
+        editor.resize(30, 12);
+        let mut pane = Pane::for_test(Size { rows: 3, cols: 30 });
+        for line in 0..8 {
+            pane.feed(format!("line{line}\r\n").as_bytes()).unwrap();
+        }
+        editor.attach_terminal(pane);
+        editor.apply(Command::ScrollLines(-4));
+
+        let terminal = render(&editor, 30, 12);
+
+        assert!(row(&terminal, 6, 30).contains("Terminal ↑"));
     }
 
     #[test]
